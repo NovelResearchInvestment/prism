@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { api, CORE_NAMES, fmtBytes, fmtSpeed, type ConnectionsResp, type CoreKind, type Mode, type ProxyItem, type TrafficDay } from "../api";
+import { api, CORE_NAMES, fmtBytes, fmtSpeed, type AppTotal, type ConnectionsResp, type CoreKind, type Mode, type ProxyItem, type TrafficDay } from "../api";
 import { useApp, usePoll } from "../state";
 import type { PageKey } from "../App";
 import { t } from "../i18n";
+import LanShareDialog from "./LanShare";
 
 const POINTS = 60;
 
@@ -29,6 +30,72 @@ function Chart({ up, down }: { up: number[]; down: number[] }) {
 }
 
 const HISTORY_DAYS = 30;
+const APP_RANGES: [number, string][] = [
+  [1, "今天"],
+  [7, "7 天"],
+  [30, "30 天"],
+];
+
+/** 应用流量: which programs used the most traffic, and through which exits. */
+function AppTraffic() {
+  const [days, setDays] = useState(1);
+  const [list, setList] = useState<AppTotal[]>([]);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    const load = () => api.appTraffic(days).then(setList).catch(() => {});
+    load();
+    const timer = setInterval(load, 15_000);
+    return () => clearInterval(timer);
+  }, [days]);
+  const max = Math.max(1, ...list.map((a) => a.upload + a.download));
+  const shown = all ? list : list.slice(0, 10);
+  return (
+    <>
+      <div className="row">
+        <h3 style={{ margin: 0 }}>{t("应用流量")}</h3>
+        <span className="spacer" />
+        <div className="seg">
+          {APP_RANGES.map(([d, label]) => (
+            <button key={d} className={days === d ? "on" : ""} onClick={() => setDays(d)}>
+              {t(label)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {list.length === 0 && <div className="small muted" style={{ marginTop: 10 }}>{t("暂无数据：内核运行时按连接统计每个程序的流量")}</div>}
+      <div className="app-traffic">
+        {shown.map((a) => {
+          const total = a.upload + a.download;
+          return (
+            <div className="app-traffic-row" key={a.name || "?"} title={a.path}>
+              <span className="app-traffic-name">{a.name || <span className="muted">{t("未知程序")}</span>}</span>
+              <span className="app-traffic-bar">
+                <i style={{ width: `${(100 * total) / max}%` }}>
+                  <b style={{ width: `${total ? (100 * a.upload) / total : 0}%` }} />
+                </i>
+              </span>
+              <span className="small mono">{fmtBytes(total)}</span>
+              <span className="small muted mono">
+                ↑{fmtBytes(a.upload)} ↓{fmtBytes(a.download)}
+              </span>
+              <span className="small muted app-traffic-exits">
+                {a.exits
+                  .slice(0, 3)
+                  .map(([e, b]) => `${e} ${Math.round((100 * b) / Math.max(1, total))}%`)
+                  .join(" · ")}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {list.length > 10 && (
+        <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setAll(!all)}>
+          {all ? t("收起") : t("显示全部 {n} 个", { n: list.length })}
+        </button>
+      )}
+    </>
+  );
+}
 
 /** Daily totals for the last 30 days, as stacked bars. */
 function TrafficHistory() {
@@ -92,6 +159,7 @@ function TrafficHistory() {
 export default function Home({ go }: { go: (p: PageKey) => void }) {
   const { snap, run } = useApp();
   const [busy, setBusy] = useState(false);
+  const [lan, setLan] = useState(false);
   const [up, setUp] = useState<number[]>(Array(POINTS).fill(0));
   const [down, setDown] = useState<number[]>(Array(POINTS).fill(0));
   const [totals, setTotals] = useState({ up: 0, down: 0, conns: 0 });
@@ -253,6 +321,18 @@ export default function Home({ go }: { go: (p: PageKey) => void }) {
               }}
             />
           </div>
+          <div className="row" style={{ marginTop: 14 }}>
+            <div>
+              <div>
+                {t("局域网共享")} {s.allow_lan && <span className="tag accent">{t("已开启")}</span>}
+              </div>
+              <div className="small muted">{t("让手机等设备使用本机代理")}</div>
+            </div>
+            <span className="spacer" />
+            <button className="btn sm" onClick={() => setLan(true)}>
+              {t("二维码")}
+            </button>
+          </div>
         </div>
 
         <div className="card span-2">
@@ -300,7 +380,12 @@ export default function Home({ go }: { go: (p: PageKey) => void }) {
           <h3>{t("最近 30 天流量")}</h3>
           <TrafficHistory />
         </div>
+
+        <div className="card span-3">
+          <AppTraffic />
+        </div>
       </div>
+      {lan && <LanShareDialog onClose={() => setLan(false)} />}
     </>
   );
 }

@@ -1,17 +1,24 @@
+mod apptraffic;
 mod autostart;
 mod backup;
 mod core;
 mod download;
 mod patches;
+mod quality;
+mod ruletest;
 mod elevate;
 mod export;
+mod geomap;
+mod lan;
 mod links;
 #[cfg(target_os = "macos")]
 mod macdns;
 mod merge;
+mod speedtest;
 mod store;
 mod sysproxy;
 mod traffic;
+mod trayspeed;
 mod tunsvc;
 mod unlock;
 mod updater;
@@ -41,6 +48,8 @@ pub struct AppState {
     /// One tray menu rebuild at a time, so an older one can't land last.
     tray_lock: tokio::sync::Mutex<()>,
     traffic: traffic::Traffic,
+    app_traffic: apptraffic::AppTraffic,
+    quality: quality::Quality,
     /// Registered global hotkey id -> action.
     hotkeys: Mutex<HashMap<u32, String>>,
 }
@@ -406,19 +415,98 @@ async fn traffic_sampler(app: AppHandle) {
             Some(_) => core::api(&st.settings(), "GET", "/connections", None).await.ok(),
             None => None,
         };
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         match totals {
             Some(v) => {
                 let up = v["uploadTotal"].as_u64().unwrap_or(0);
                 let down = v["downloadTotal"].as_u64().unwrap_or(0);
-                st.traffic.record(&chrono::Local::now().format("%Y-%m-%d").to_string(), up, down);
+                st.traffic.record(&today, up, down);
+                st.app_traffic.record(&today, &v);
             }
-            None => st.traffic.reset_baseline(),
+            None => {
+                st.traffic.reset_baseline();
+                st.app_traffic.reset();
+            }
         }
         tick += 1;
         if tick % 12 == 0 {
             st.traffic.save();
+            st.app_traffic.save();
         }
     }
+}
+
+/// Collects node latency for 节点质量: the core's delay histories every
+/// minute, and a test of the nodes in use every 5 minutes.
+async fn quality_sampler(app: AppHandle) {
+    let mut tick = 0u32;
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        tick += 1;
+        let st = app.state::<AppState>();
+        if st.core.running().await.is_none() {
+            continue;
+        }
+        let s = st.settings();
+        let Ok(proxies) = core::api(&s, "GET", "/proxies", None).await else { continue };
+        if tick % 5 == 0 {
+            let url = urlencode(&s.test_url);
+            let tests = quality::selected_nodes(&proxies).into_iter().map(|n| {
+                let path = format!("/proxies/{}/delay?timeout=5000&url={url}", urlencode(&n));
+                let s = s.clone();
+                async move {
+                    let _ = core::api(&s, "GET", &path, None).await;
+                }
+            });
+            futures::future::join_all(tests).await;
+        }
+        let latest = if tick % 5 == 0 { core::api(&s, "GET", "/proxies", None).await.unwrap_or(proxies) } else { proxies };
+        st.quality.ingest(&latest, chrono::Utc::now().timestamp());
+        if tick % 5 == 0 {
+            st.quality.save();
+        }
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+/// Traffic per program over the last `days` days (1 = today).
+#[tauri::command]
+fn app_traffic(st: State<'_, AppState>, days: u32) -> Vec<apptraffic::AppTotal> {
+    let since = chrono::Local::now() - chrono::Duration::days(i64::from(days.max(1)) - 1);
+    st.app_traffic.totals(&since.format("%Y-%m-%d").to_string())
+}
+
+/// 局域网共享: LAN addresses of this computer.
+#[tauri::command]
+fn lan_addresses() -> Vec<lan::LanAddr> {
+    lan::addresses()
+}
+
+/// Turns 允许局域网连接 on / off and restarts a running core to apply it.
+#[tauri::command]
+async fn set_allow_lan(app: AppHandle, st: State<'_, AppState>, enable: bool) -> Res<()> {
+    st.update(|s| s.allow_lan = enable)?;
+    if st.core.running().await.is_some() {
+        start(&app, &st).await?;
+    }
+    Ok(())
+}
+
+/// 带宽测速: downloads `url` through each node in turn ("speed-progress" events).
+#[tauri::command]
+async fn speed_test(app: AppHandle, st: State<'_, AppState>, names: Vec<String>, url: String, seconds: u64) -> Res<Vec<speedtest::Progress>> {
+    let running = st.core.running().await;
+    speedtest::run(&app, &st.store, &st.settings(), running, names, &url, seconds).await.map_err(e)
+}
+
+#[tauri::command]
+fn node_quality(st: State<'_, AppState>) -> Vec<quality::NodeStats> {
+    st.quality.stats(chrono::Utc::now().timestamp())
 }
 
 #[derive(Deserialize)]
@@ -892,6 +980,27 @@ fn profile_outbounds(st: State<'_, AppState>) -> Res<Value> {
     Ok(json!({ "groups": groups, "proxies": proxies }))
 }
 
+/// 规则测试: the rule `target` hits (domain, IP or URL; optional program).
+#[tauri::command]
+async fn test_rule(st: State<'_, AppState>, target: String, network: String, process: String) -> Res<ruletest::Outcome> {
+    let running = st.core.running().await;
+    ruletest::run(&st.store, &st.settings(), running, &target, &network, &process).await.map_err(e)
+}
+
+/// Country codes of connection endpoints, for the connection map.
+#[tauri::command]
+async fn geo_locate(st: State<'_, AppState>, hosts: Vec<String>) -> Res<HashMap<String, Option<String>>> {
+    let running = st.core.running().await;
+    geomap::locate(&st.store.runtime_dir(), &st.settings(), running, hosts).await.map_err(e)
+}
+
+/// Node name → server address of the active profile (map: where nodes are).
+#[tauri::command]
+fn node_servers(st: State<'_, AppState>) -> Res<HashMap<String, String>> {
+    let p = core::rule_test_profile(&st.store, &st.settings()).map_err(e)?;
+    Ok(p.proxies.into_iter().map(|x| (x.name, x.server)).collect())
+}
+
 /// Saves the app rules and restarts a running core so they take effect.
 #[tauri::command]
 async fn set_app_rules(app: AppHandle, st: State<'_, AppState>, rules: Vec<store::AppRule>) -> Res<()> {
@@ -1252,6 +1361,8 @@ pub fn run() {
             }
             let settings = store.settings();
             let traffic = traffic::Traffic::load(store.dir.join("traffic.json"));
+            let quality = quality::Quality::load(store.dir.join("quality.json"));
+            let app_traffic = apptraffic::AppTraffic::load(store.dir.join("app_traffic.json"));
             let hidden = autostarted && settings.silent_start && link.is_none();
             app.manage(AppState {
                 store,
@@ -1261,6 +1372,8 @@ pub fn run() {
                 imports: Mutex::new(Vec::new()),
                 tray_lock: Default::default(),
                 traffic,
+                app_traffic,
+                quality,
                 hotkeys: Default::default(),
             });
             {
@@ -1271,6 +1384,8 @@ pub fn run() {
                 }
             }
             tauri::async_runtime::spawn(traffic_sampler(app.handle().clone()));
+            tauri::async_runtime::spawn(quality_sampler(app.handle().clone()));
+            tauri::async_runtime::spawn(trayspeed::run(app.handle().clone()));
 
             let menu = build_tray_menu(app.handle(), &[])?;
             TrayIconBuilder::with_id("main")
@@ -1386,6 +1501,14 @@ pub fn run() {
             get_logs,
             list_processes,
             profile_outbounds,
+            test_rule,
+            geo_locate,
+            node_servers,
+            node_quality,
+            speed_test,
+            lan_addresses,
+            set_allow_lan,
+            app_traffic,
             set_app_rules,
             set_route_rules,
             set_profile_interval,
@@ -1429,6 +1552,8 @@ pub fn run() {
         if let RunEvent::Exit = ev {
             let st = app.state::<AppState>();
             st.traffic.save();
+            st.app_traffic.save();
+            st.quality.save();
             if st.settings().system_proxy {
                 let _ = sysproxy::set(false, "", "");
             }

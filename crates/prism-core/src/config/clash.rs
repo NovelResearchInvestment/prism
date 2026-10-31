@@ -130,6 +130,19 @@ pub fn parse_proxy(m: &Mapping) -> Result<ProxyConfig> {
     if let Some(g) = sub(m, "grpc-opts") {
         p.grpc_service = s(g, "grpc-service-name");
     }
+    if let Some(h) = sub(m, "h2-opts") {
+        p.ws_path = s(h, "path");
+        p.ws_host = list(h, "host").into_iter().next();
+    }
+    if let Some(x) = sub(m, "xhttp-opts") {
+        p.ws_path = s(x, "path");
+        p.ws_host = s(x, "host");
+        p.xhttp_mode = s(x, "mode");
+        p.xhttp_padding = s(x, "x-padding-bytes");
+        if x.contains_key("download-settings") {
+            bail!("proxy {}: xhttp download-settings is not supported by prism-core", p.name);
+        }
+    }
     if let Some(r) = sub(m, "reality-opts") {
         p.reality_public_key = s(r, "public-key");
         p.reality_short_id = s(r, "short-id");
@@ -166,13 +179,11 @@ pub fn parse(v: &Value) -> Result<Profile> {
     if let Some(t) = sub(root, "tun") {
         g.tun.enable = b(t, "enable");
         g.tun.auto_route = !matches!(t.get("auto-route"), Some(Value::Bool(false)));
+        g.tun.ipv6 = !list(t, "inet6-address").is_empty();
     }
     if let Some(d) = sub(root, "dns") {
         g.tun.dns = list(d, "default-nameserver").into_iter().filter(|x| x.parse::<std::net::IpAddr>().is_ok()).collect();
         p.dns = parse_dns(d);
-        if d.contains_key("fallback") {
-            p.warnings.push("dns: fallback / fallback-filter are not supported by prism-core and were ignored".into());
-        }
     }
     if let Some(h) = sub(root, "hosts") {
         for (k, v) in h {
@@ -280,6 +291,16 @@ fn parse_dns(d: &Mapping) -> DnsConfig {
         nameserver: list(d, "nameserver"),
         proxy_server_nameserver: list(d, "proxy-server-nameserver"),
         nameserver_policy: policy,
+        fallback: list(d, "fallback"),
+        fallback_filter: match sub(d, "fallback-filter") {
+            Some(f) => FallbackFilter {
+                geoip: !matches!(f.get("geoip"), Some(Value::Bool(false))),
+                geoip_code: s(f, "geoip-code").unwrap_or_else(|| "CN".into()),
+                ipcidr: list(f, "ipcidr"),
+                domain: list(f, "domain").into_iter().chain(list(f, "geosite").into_iter().map(|g| format!("geosite:{g}"))).collect(),
+            },
+            None => FallbackFilter::default(),
+        },
     }
 }
 
@@ -387,6 +408,20 @@ pub fn emit_proxy(p: &ProxyConfig) -> Value {
             let mut g = Mapping::new();
             put_opt(&mut g, "grpc-service-name", &p.grpc_service);
             put(&mut m, "grpc-opts", Value::Mapping(g));
+        } else if net == "h2" {
+            let mut h = Mapping::new();
+            put(&mut h, "path", p.ws_path.clone().unwrap_or_else(|| "/".into()));
+            if let Some(host) = &p.ws_host {
+                put(&mut h, "host", seq(&[host.as_str()]));
+            }
+            put(&mut m, "h2-opts", Value::Mapping(h));
+        } else if net == "xhttp" {
+            let mut x = Mapping::new();
+            put(&mut x, "path", p.ws_path.clone().unwrap_or_else(|| "/".into()));
+            put_opt(&mut x, "host", &p.ws_host);
+            put_opt(&mut x, "mode", &p.xhttp_mode);
+            put_opt(&mut x, "x-padding-bytes", &p.xhttp_padding);
+            put(&mut m, "xhttp-opts", Value::Mapping(x));
         }
     }
     if p.reality_public_key.is_some() {
@@ -603,6 +638,8 @@ pub fn apply_overrides(v: &mut Value, o: &Overrides) {
         put(&mut t, "auto-detect-interface", true);
         put(&mut t, "dns-hijack", seq(&["any:53"]));
         put(&mut t, "mtu", 9000u64);
+        // IPv6 is routed into the TUN too, so it can't bypass the rules.
+        put(&mut t, "inet6-address", seq(&["fdfe:dcba:9876::1/126"]));
         put(root, "tun", Value::Mapping(t));
         // TUN needs a DNS module; keep the profile's if it has one.
         let dns_on = root.get("dns").and_then(|d| d.as_mapping()).is_some_and(|d| b(d, "enable"));
@@ -630,6 +667,21 @@ pub fn apply_overrides(v: &mut Value, o: &Overrides) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn tun_override_routes_ipv6() {
+        let mut v: Value = serde_yaml::from_str("proxies: []
+rules: [MATCH,DIRECT]
+").unwrap();
+        let o = Overrides { mixed_port: 7890, controller: "127.0.0.1:9090".into(), secret: String::new(), mode: Mode::Rule, allow_lan: false, log_level: "info".into(), tun: true, unified_delay: false };
+        apply_overrides(&mut v, &o);
+        let p = parse(&v).unwrap();
+        assert!(p.general.tun.enable && p.general.tun.auto_route && p.general.tun.ipv6);
+        let plain: Value = serde_yaml::from_str("tun: {enable: true}
+proxies: []
+").unwrap();
+        assert!(!parse(&plain).unwrap().general.tun.ipv6);
+    }
     use super::*;
 
     const SBM: &str = r#"

@@ -11,6 +11,7 @@ import SettingsPage from "./pages/Settings";
 import Apps from "./pages/Apps";
 import Routes from "./pages/Routes";
 import ImportDialog from "./ImportDialog";
+import CommandPalette, { PALETTE_KEY } from "./CommandPalette";
 import { setLang, t } from "./i18n";
 
 const PAGES = [
@@ -61,6 +62,10 @@ function Shell() {
             {t("发现新版本 v{v}", { v: update.version })}
           </button>
         )}
+        <button className="palette-hint" onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))}>
+          <span>{t("搜索 / 命令")}</span>
+          <kbd>{PALETTE_KEY}</kbd>
+        </button>
         <div className="side-status">
           <span className={`dot ${snap?.running ? "on" : ""}`} />
           {snap?.running ? t("{core} 运行中", { core: t(CORE_NAMES[snap.running]) }) : t("内核未运行")}
@@ -70,6 +75,7 @@ function Shell() {
         <Page go={setPage} />
       </main>
       <ImportDialog go={setPage} />
+      <CommandPalette pages={PAGES} go={setPage} />
     </div>
   );
 }

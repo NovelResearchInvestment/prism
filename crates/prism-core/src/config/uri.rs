@@ -171,8 +171,24 @@ fn parse_generic(line: &str, scheme: &str) -> Result<ProxyConfig> {
                 p.network = Some("grpc".into());
                 p.grpc_service = q.get("serviceName").cloned();
             }
+            // V2RayN spells the HTTP/2 transport `http`.
+            Some("h2" | "http") => {
+                p.network = Some("h2".into());
+                p.ws_path = q.get("path").cloned();
+                p.ws_host = q.get("host").and_then(|h| h.split(',').next()).map(str::to_string).filter(|h| !h.is_empty());
+            }
+            Some(t @ ("xhttp" | "splithttp")) => {
+                if q.get("extra").is_some_and(|e| e.contains("downloadSettings")) {
+                    bail!("xhttp downloadSettings is not supported");
+                }
+                let _ = t;
+                p.network = Some("xhttp".into());
+                p.ws_path = q.get("path").cloned();
+                p.ws_host = q.get("host").cloned().filter(|h| !h.is_empty());
+                p.xhttp_mode = q.get("mode").cloned().filter(|m| !m.is_empty());
+            }
             None | Some("" | "tcp" | "raw") => {}
-            // h2, xhttp, kcp...: kept so the node isn't dialed as plain TCP.
+            // kcp, quic...: kept so the node isn't dialed as plain TCP.
             Some(t) => p.network = Some(t.into()),
         }
     }
@@ -294,5 +310,16 @@ mod tests {
         assert_eq!(w.ip.as_deref(), Some("172.16.0.2/32"));
         assert_eq!(w.ipv6.as_deref(), Some("2606:4700::2/128"));
         assert_eq!(w.mtu, Some(1280));
+    }
+
+    /// SIP022 links keep `method:base64-keys` percent-encoded, not base64-wrapped.
+    #[test]
+    fn shadowsocks_2022_links() {
+        let s = parse_uri("ss://2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw%3D%3D%3AEBESExQVFhcYGRobHB0eHw%3D%3D@s.example.com:443#ss22").unwrap();
+        assert_eq!(s.cipher.as_deref(), Some("2022-blake3-aes-128-gcm"));
+        assert_eq!(s.password.as_deref(), Some("AAECAwQFBgcICQoLDA0ODw==:EBESExQVFhcYGRobHB0eHw=="));
+        let b = parse_uri(&format!("ss://{}@s.example.com:443#b", STANDARD.encode("2022-blake3-aes-256-gcm:a2V5"))).unwrap();
+        assert_eq!(b.cipher.as_deref(), Some("2022-blake3-aes-256-gcm"));
+        assert_eq!(b.password.as_deref(), Some("a2V5"));
     }
 }

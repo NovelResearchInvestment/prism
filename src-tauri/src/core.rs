@@ -147,23 +147,36 @@ pub fn profile_outbounds(store: &Store, s: &Settings) -> Result<(Vec<String>, Ve
     Ok((p.groups.into_iter().map(|g| g.name).collect(), p.proxies.into_iter().map(|x| x.name).collect()))
 }
 
+/// The active profile as a Clash document with the GUI's overrides, domain /
+/// IP rules and app rules.
+fn clash_doc(store: &Store, s: &Settings) -> Result<(serde_yaml::Value, Vec<String>)> {
+    let (raw, mut warnings) = active_profile_full(store, s)?;
+    let mut doc: serde_yaml::Value = match config::detect(&raw) {
+        Format::Clash => serde_yaml::from_str(&raw)?,
+        _ => clash::emit(&config::parse_any(&raw)?),
+    };
+    clash::apply_overrides(&mut doc, &overrides(s));
+    warnings.extend(route_warnings(clash::add_user_rules(&mut doc, &user_rules(s))));
+    warnings.extend(app_warnings(clash::add_app_rules(&mut doc, &app_routes(s))));
+    Ok((doc, warnings))
+}
+
+/// The rules in effect, for the rule tester. sing-box gets the same rules
+/// converted, so the Clash form answers for every core.
+pub fn rule_test_profile(store: &Store, s: &Settings) -> Result<config::Profile> {
+    clash::parse(&clash_doc(store, s)?.0)
+}
+
 /// Converts the active profile into the selected core's config format and
 /// writes it to the runtime dir.
 pub fn write_runtime_config(store: &Store, s: &Settings) -> Result<RuntimeConfig> {
     let dir = store.runtime_dir();
     match s.core {
         CoreKind::Prism | CoreKind::Mihomo => {
-            let (raw, mut warnings) = active_profile_full(store, s)?;
-            let mut doc: serde_yaml::Value = match config::detect(&raw) {
-                Format::Clash => serde_yaml::from_str(&raw)?,
-                _ => clash::emit(&config::parse_any(&raw)?),
-            };
-            clash::apply_overrides(&mut doc, &overrides(s));
+            let (mut doc, warnings) = clash_doc(store, s)?;
             if s.core == CoreKind::Mihomo {
                 clash::relays_to_dialer_proxy(&mut doc);
             }
-            warnings.extend(route_warnings(clash::add_user_rules(&mut doc, &user_rules(s))));
-            warnings.extend(app_warnings(clash::add_app_rules(&mut doc, &app_routes(s))));
             let path = dir.join("config.yaml");
             std::fs::write(&path, serde_yaml::to_string(&doc)?)?;
             Ok(RuntimeConfig { path, warnings })

@@ -1,0 +1,202 @@
+//! Live speed in the tray: the tooltip everywhere, the menu bar text on
+//! macOS, and (opt-in) on Windows an icon drawn with the two speeds.
+//! Reads the running core's `/traffic` stream.
+
+// The drawn icon is for Windows; macOS shows text instead.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+use std::time::Duration;
+
+#[cfg(not(target_os = "macos"))]
+use tauri::image::Image;
+use tauri::{AppHandle, Manager};
+
+use crate::AppState;
+
+/// `1.2M`, `85K`, `999B`: at most 4 characters, per second.
+pub fn compact(n: u64) -> String {
+    const K: f64 = 1024.0;
+    let f = n as f64;
+    if n < 1000 {
+        format!("{n}B")
+    } else if f < 10.0 * K {
+        format!("{:.1}K", f / K)
+    } else if f < 1000.0 * K {
+        format!("{:.0}K", f / K)
+    } else if f < 10.0 * K * K {
+        format!("{:.1}M", f / K / K)
+    } else if f < 1000.0 * K * K {
+        format!("{:.0}M", f / K / K)
+    } else {
+        format!("{:.1}G", f / K / K / K)
+    }
+}
+
+/// 3×5 glyphs, one row per entry, bit 2 = left column.
+fn glyph(c: char) -> Option<(usize, [u8; 5])> {
+    Some(match c {
+        '0' => (3, [7, 5, 5, 5, 7]),
+        '1' => (3, [2, 6, 2, 2, 7]),
+        '2' => (3, [7, 1, 7, 4, 7]),
+        '3' => (3, [7, 1, 7, 1, 7]),
+        '4' => (3, [5, 5, 7, 1, 1]),
+        '5' => (3, [7, 4, 7, 1, 7]),
+        '6' => (3, [7, 4, 7, 5, 7]),
+        '7' => (3, [7, 1, 1, 1, 1]),
+        '8' => (3, [7, 5, 7, 5, 7]),
+        '9' => (3, [7, 5, 7, 1, 7]),
+        '.' => (1, [0, 0, 0, 0, 1]),
+        'B' => (3, [6, 5, 6, 5, 6]),
+        'K' => (3, [5, 5, 6, 5, 5]),
+        'M' => (3, [5, 7, 7, 5, 5]),
+        'G' => (3, [7, 4, 5, 5, 7]),
+        _ => return None,
+    })
+}
+
+const SIZE: usize = 32;
+/// Each font pixel is a 2×2 block, so the 16 px tray size shows it 1:1.
+const SCALE: usize = 2;
+
+fn draw_line(rgba: &mut [u8], text: &str, top: usize, color: [u8; 3]) {
+    let glyphs: Vec<(usize, [u8; 5])> = text.chars().filter_map(glyph).collect();
+    let width: usize = glyphs.iter().map(|(w, _)| w * SCALE).sum::<usize>() + glyphs.len().saturating_sub(1) * SCALE;
+    let mut x0 = SIZE.saturating_sub(width) / 2;
+    for (w, rows) in glyphs {
+        for (ry, bits) in rows.iter().enumerate() {
+            for cx in 0..w {
+                if bits >> (w - 1 - cx) & 1 == 0 {
+                    continue;
+                }
+                for dy in 0..SCALE {
+                    for dx in 0..SCALE {
+                        let (x, y) = (x0 + cx * SCALE + dx, top + ry * SCALE + dy);
+                        if x < SIZE && y < SIZE {
+                            let i = (y * SIZE + x) * 4;
+                            rgba[i..i + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
+                        }
+                    }
+                }
+            }
+        }
+        x0 += (w + 1) * SCALE;
+    }
+}
+
+/// A 32×32 icon: upload on top, download below, on a dark rounded square.
+pub fn render(up: u64, down: u64) -> Vec<u8> {
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            // Rounded corners (radius 5).
+            let (cx, cy) = (x.min(SIZE - 1 - x), y.min(SIZE - 1 - y));
+            if cx < 5 && cy < 5 && (5 - cx) * (5 - cx) + (5 - cy) * (5 - cy) > 26 {
+                continue;
+            }
+            let i = (y * SIZE + x) * 4;
+            rgba[i..i + 4].copy_from_slice(&[27, 29, 39, 240]);
+        }
+    }
+    draw_line(&mut rgba, &compact(up), 4, [178, 166, 255]);
+    draw_line(&mut rgba, &compact(down), 18, [64, 208, 255]);
+    rgba
+}
+
+fn tooltip(up: u64, down: u64) -> String {
+    format!("Prism\n↑ {}/s  ↓ {}/s", compact(up), compact(down))
+}
+
+/// Shows (`Some`) or clears the speed.
+fn show(app: &AppHandle, speed: Option<(u64, u64)>, icon_mode: bool, drawn: &mut bool) {
+    let Some(tray) = app.tray_by_id("main") else { return };
+    let _ = tray.set_tooltip(Some(match speed {
+        Some((u, d)) => tooltip(u, d),
+        None => "Prism".to_string(),
+    }));
+    // macOS: text next to the menu bar icon.
+    #[cfg(target_os = "macos")]
+    {
+        let title = speed.filter(|_| icon_mode).map(|(u, d)| format!("↑{} ↓{}", compact(u), compact(d)));
+        let _ = tray.set_title(title);
+        *drawn = false;
+    }
+    #[cfg(not(target_os = "macos"))]
+    match speed {
+        Some((u, d)) if icon_mode => {
+            let _ = tray.set_icon(Some(Image::new_owned(render(u, d), SIZE as u32, SIZE as u32)));
+            *drawn = true;
+        }
+        _ if *drawn => {
+            let _ = tray.set_icon(app.default_window_icon().cloned());
+            *drawn = false;
+        }
+        _ => {}
+    }
+}
+
+/// Follows the core's `/traffic` stream for as long as Prism runs.
+pub async fn run(app: AppHandle) {
+    let mut drawn = false;
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let st = app.state::<AppState>();
+        if st.core.running().await.is_none() {
+            show(&app, None, false, &mut drawn);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        let s = st.settings();
+        let client = match reqwest::Client::builder().no_proxy().connect_timeout(Duration::from_secs(3)).build() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let url = format!("http://127.0.0.1:{}/traffic", s.controller_port);
+        let Ok(mut resp) = client.get(&url).bearer_auth(&s.secret).send().await else { continue };
+        let mut buf = Vec::new();
+        // A chunk at least every few seconds, or the stream is stale.
+        while let Ok(Ok(Some(chunk))) = tokio::time::timeout(Duration::from_secs(5), resp.chunk()).await {
+            buf.extend_from_slice(&chunk);
+            while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=nl).collect();
+                let Ok(v) = serde_json::from_slice::<serde_json::Value>(&line) else { continue };
+                let (up, down) = (v["up"].as_u64().unwrap_or(0), v["down"].as_u64().unwrap_or(0));
+                let icon_mode = app.state::<AppState>().settings().tray_speed;
+                show(&app, Some((up, down)), icon_mode, &mut drawn);
+            }
+        }
+        show(&app, None, false, &mut drawn);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_fits_four_chars() {
+        for (n, s) in [(0, "0B"), (999, "999B"), (1000, "1.0K"), (10 * 1024, "10K"), (999 * 1024, "999K"), (1_300_000, "1.2M"), (50 << 20, "50M"), (3 << 30, "3.0G")] {
+            assert_eq!(compact(n), s);
+        }
+        for n in [0u64, 512, 9_999, 123_456, 999_999, 1 << 20, 999 << 20, 5 << 30] {
+            let c = compact(n);
+            assert!(c.len() <= 4, "{c}");
+            assert!(c.chars().all(|ch| glyph(ch).is_some()), "{c}");
+        }
+    }
+
+    #[test]
+    fn icon_draws_both_lines() {
+        let px = render(1_300_000, 50 << 20);
+        assert_eq!(px.len(), 32 * 32 * 4);
+        let lit = |y0: usize, y1: usize, c: u8| (y0..y1).flat_map(|y| (0..32).map(move |x| (y * 32 + x) * 4)).filter(|&i| px[i] == c).count();
+        assert!(lit(4, 14, 178) > 20, "upload text");
+        assert!(lit(18, 28, 64) > 20, "download text");
+        assert_eq!(px[3], 0, "corner is transparent");
+        if std::env::var_os("PRISM_DUMP_ICON").is_some() {
+            use base64::Engine;
+            for (u, d) in [(1_300_000u64, 50u64 << 20), (850 * 1024, 9_999), (0, 512)] {
+                println!("ICON {}", base64::engine::general_purpose::STANDARD.encode(render(u, d)));
+            }
+        }
+    }
+}

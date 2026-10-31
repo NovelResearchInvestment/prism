@@ -3,6 +3,8 @@ import { api, delayClass, enc, errText, lastDelay, type ProxyItem, type UnlockCh
 import { useApp } from "../state";
 import type { PageKey } from "../App";
 import { ProxyProviders } from "./Providers";
+import QualityDialog from "./Quality";
+import SpeedDialog from "./SpeedTest";
 import { t } from "../i18n";
 
 type ProxyMap = Record<string, ProxyItem>;
@@ -108,6 +110,8 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
   const [sort, setSort] = useState<SortKey>(loadSort);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [unlock, setUnlock] = useState(false);
+  const [quality, setQuality] = useState(false);
+  const [speed, setSpeed] = useState(false);
   const running = !!snap?.running;
   const testUrl = snap?.settings.test_url ?? "";
 
@@ -237,6 +241,12 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
         <button className="btn" onClick={load}>
           {t("刷新")}
         </button>
+        <button className="btn" onClick={() => setQuality(true)}>
+          {t("节点质量")}
+        </button>
+        <button className="btn" onClick={() => setSpeed(true)}>
+          {t("带宽测速")}
+        </button>
         <button className="btn" onClick={() => setUnlock(true)}>
           {t("解锁检测")}
         </button>
@@ -319,6 +329,8 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
       {groups.length === 0 && <div className="empty">{t("没有代理组")}</div>}
       {groups.length > 0 && shown.length === 0 && <div className="empty">{t("没有匹配「{q}」的节点", { q: query.trim() })}</div>}
       {unlock && <UnlockDialog onClose={() => setUnlock(false)} />}
+      {speed && <SpeedDialog proxies={proxies} groups={groups} onClose={() => setSpeed(false)} />}
+      {quality && <QualityDialog proxies={proxies} groups={groups} onSelect={select} onClose={() => setQuality(false)} />}
     </>
   );
 }

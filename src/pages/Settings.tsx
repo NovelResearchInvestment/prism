@@ -365,6 +365,15 @@ function StartupCard({ form, set }: { form: Settings; set: <K extends keyof Sett
           <span className="small muted">{t("开机自启时只在托盘运行，不弹出主界面")}</span>
         </div>
       </div>
+      <div className="field">
+        <label>{mac ? t("菜单栏网速") : t("托盘图标显示网速")}</label>
+        <div className="row">
+          <button className={`switch ${form.tray_speed ? "on" : ""}`} onClick={() => set("tray_speed", !form.tray_speed)} />
+          <span className="small muted">
+            {mac ? t("在菜单栏图标旁显示 ↑↓ 实时速度") : t("托盘图标改为上传 / 下载速度（鼠标悬停提示中始终显示网速）")}
+          </span>
+        </div>
+      </div>
       {!mac && <div className="field">
         <label>{t("接管 clash:// 链接")}</label>
         <div className="row">

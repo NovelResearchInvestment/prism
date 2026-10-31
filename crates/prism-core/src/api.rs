@@ -67,7 +67,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/memory", get(|| async { Json(json!({ "inuse": 0, "oslimit": 0 })) }))
         .route("/cache/fakeip/flush", axum::routing::post(|| async { StatusCode::NO_CONTENT }))
         .route("/restart", axum::routing::post(|| async { StatusCode::NO_CONTENT }))
-        .route("/dns/query", get(|| async { StatusCode::NOT_IMPLEMENTED }))
+        .route("/dns/query", get(dns_query))
         .route("/providers/proxies", get(get_proxy_providers))
         .route("/providers/proxies/{name}", get(get_proxy_provider).put(update_proxy_provider))
         .route("/providers/proxies/{name}/healthcheck", get(healthcheck_provider))
@@ -390,6 +390,28 @@ async fn get_rules(State(hub): St) -> Json<Value> {
         })
         .collect();
     Json(json!({ "rules": rules }))
+}
+
+/// mihomo's `/dns/query?name=&type=A|AAAA`: real addresses (never fake-ip)
+/// from the DNS module, else the system resolver.
+async fn dns_query(State(hub): St, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(name) = q.get("name").map(|n| n.trim_end_matches('.').to_string()).filter(|n| !n.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, "name is required");
+    };
+    let v6 = q.get("type").is_some_and(|t| t.eq_ignore_ascii_case("AAAA"));
+    let ips = match hub.core().dns.clone() {
+        Some(r) => r.lookup(&name).await,
+        None => crate::net::resolve(&name, 0).await.map(|a| a.into_iter().map(|s| s.ip()).collect()),
+    };
+    let qtype = if v6 { 28 } else { 1 };
+    let answer: Vec<Value> = ips
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|ip| ip.is_ipv6() == v6)
+        .map(|ip| json!({ "name": format!("{name}."), "type": qtype, "TTL": 60, "data": ip.to_string() }))
+        .collect();
+    let status = if answer.is_empty() { 3 } else { 0 };
+    Json(json!({ "Status": status, "Question": [{ "name": format!("{name}."), "qtype": qtype, "qclass": 1 }], "Answer": answer })).into_response()
 }
 
 /// Streams `{"up":..,"down":..}` (bytes/s) once per second, like mihomo.

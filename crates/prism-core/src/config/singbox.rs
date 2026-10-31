@@ -52,6 +52,13 @@ fn transport_json(p: &ProxyConfig) -> Option<Value> {
             Some(t)
         }
         "grpc" => Some(json!({ "type": "grpc", "service_name": p.grpc_service.clone().unwrap_or_default() })),
+        "h2" => {
+            let mut t = json!({ "type": "http", "path": p.ws_path.clone().unwrap_or_else(|| "/".into()) });
+            if let Some(h) = &p.ws_host {
+                t["host"] = json!([h]);
+            }
+            Some(t)
+        }
         _ => None,
     }
 }
@@ -896,9 +903,10 @@ pub fn parse(v: &Value) -> Result<Profile> {
             alpn: strs(&tls, "alpn"),
             fingerprint: tls.get("utls").and_then(|u| st(u, "fingerprint")),
             flow: st(ob, "flow"),
-            network: st(&tr, "type"),
+            // sing-box's "http" transport is V2Ray's HTTP/2 one.
+            network: st(&tr, "type").map(|t| if t == "http" { "h2".into() } else { t }),
             ws_path: st(&tr, "path"),
-            ws_host: tr.get("headers").and_then(|h| st(h, "Host")).or_else(|| st(&tr, "host")),
+            ws_host: tr.get("headers").and_then(|h| st(h, "Host")).or_else(|| st(&tr, "host")).or_else(|| strs(&tr, "host").into_iter().next()),
             grpc_service: st(&tr, "service_name"),
             reality_public_key: st(&reality, "public_key"),
             reality_short_id: st(&reality, "short_id"),

@@ -87,6 +87,12 @@ pub async fn fetch_to_file(url: &str, path: &Path, via: Option<&Arc<dyn Outbound
 /// first when the file is missing or older than `interval` seconds.
 /// Returns the content and an optional warning.
 pub async fn load(kind: &str, url: Option<&str>, path: &Path, interval: u64) -> Result<(String, Option<String>)> {
+    let (bytes, warn) = load_bytes(kind, url, path, interval).await?;
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), warn))
+}
+
+/// [`load`] for binary content (mrs rule-sets).
+pub async fn load_bytes(kind: &str, url: Option<&str>, path: &Path, interval: u64) -> Result<(Vec<u8>, Option<String>)> {
     if kind == "http" {
         let url = url.ok_or_else(|| anyhow!("http provider without url"))?;
         let stale = match modified(path) {
@@ -98,19 +104,33 @@ pub async fn load(kind: &str, url: Option<&str>, path: &Path, interval: u64) -> 
                 if !path.exists() {
                     return Err(e);
                 }
-                let content = std::fs::read_to_string(path)?;
+                let content = std::fs::read(path)?;
                 return Ok((content, Some(format!("download failed, using cached file: {e:#}"))));
             }
         }
     } else if kind != "file" {
         bail!("unsupported provider type {kind}");
     }
-    let content = std::fs::read_to_string(path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
+    let content = std::fs::read(path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
     Ok((content, None))
 }
 
-/// Entries of a rule provider in `yaml` (`payload:` list) or `text` format.
-pub fn rule_entries(format: &str, content: &str) -> Result<Vec<String>> {
+/// Entries of a rule provider in `yaml` (`payload:` list), `text` or `mrs`
+/// (mihomo binary; its behavior must be the provider's).
+pub fn rule_entries(format: &str, behavior: &str, content: &[u8]) -> Result<Vec<String>> {
+    if format == "mrs" {
+        let (b, entries) = crate::mrs::decode(content)?;
+        if !behavior.eq_ignore_ascii_case(&b) {
+            bail!("mrs file holds a {b} rule-set, but the provider's behavior is {behavior}");
+        }
+        // mrs stores `+.x` for subdomains only (the apex is its own entry):
+        // that is `.x` in rule-set syntax.
+        return Ok(entries.into_iter().map(|e| match e.strip_prefix("+.") {
+            Some(rest) => format!(".{rest}"),
+            None => e,
+        }).collect());
+    }
+    let content = String::from_utf8_lossy(content);
     match format {
         "text" => Ok(content
             .lines()
@@ -119,11 +139,11 @@ pub fn rule_entries(format: &str, content: &str) -> Result<Vec<String>> {
             .map(String::from)
             .collect()),
         "yaml" | "" => {
-            let v: serde_yaml::Value = serde_yaml::from_str(content)?;
+            let v: serde_yaml::Value = serde_yaml::from_str(&content)?;
             let payload = v.get("payload").and_then(|p| p.as_sequence()).ok_or_else(|| anyhow!("no payload list"))?;
             Ok(payload.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).filter(|s| !s.is_empty()).collect())
         }
-        other => bail!("rule provider format {other} is not supported (use yaml or text)"),
+        other => bail!("rule provider format {other} is not supported (use yaml, text or mrs)"),
     }
 }
 
@@ -165,9 +185,10 @@ mod tests {
     #[test]
     fn rule_formats() {
         let y = "payload:\n  - '+.google.com'\n  - 'example.org'\n";
-        assert_eq!(rule_entries("yaml", y).unwrap(), ["+.google.com", "example.org"]);
+        assert_eq!(rule_entries("yaml", "domain", y.as_bytes()).unwrap(), ["+.google.com", "example.org"]);
         let t = "# comment\n1.0.0.0/8\n\n2.0.0.0/8\n";
-        assert_eq!(rule_entries("text", t).unwrap(), ["1.0.0.0/8", "2.0.0.0/8"]);
-        assert!(rule_entries("mrs", "").is_err());
+        assert_eq!(rule_entries("text", "ipcidr", t.as_bytes()).unwrap(), ["1.0.0.0/8", "2.0.0.0/8"]);
+        assert!(rule_entries("mrs", "domain", b"").is_err());
+        assert!(rule_entries("json", "domain", b"").is_err());
     }
 }

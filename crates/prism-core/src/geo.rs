@@ -270,6 +270,12 @@ impl IpSet {
     }
 }
 
+/// Every category code in a geosite / geoip file.
+pub fn codes(path: &Path) -> io::Result<Vec<String>> {
+    let data = std::fs::read(path)?;
+    Ok(entries(&data).filter_map(entry_code).collect())
+}
+
 pub fn load_geoip(path: &Path, codes: &[String]) -> io::Result<HashMap<String, IpSet>> {
     let data = std::fs::read(path)?;
     let wanted: HashSet<String> = codes.iter().map(|c| c.to_ascii_lowercase()).collect();

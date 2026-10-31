@@ -1,8 +1,10 @@
 //! DNS upstream servers, in mihomo's URL syntax:
 //!
 //! `223.5.5.5`, `udp://1.1.1.1:53`, `tcp://8.8.8.8`, `tls://dns.alidns.com`,
-//! `https://doh.pub/dns-query`, optionally followed by `#<proxy or group>`
-//! to send the queries through that outbound.
+//! `https://doh.pub/dns-query`, `quic://dns.alidns.com` (DNS over QUIC,
+//! RFC 9250), `https://dns.alidns.com/dns-query#h3=true` or `h3://…` (DNS
+//! over HTTP/3), optionally followed by `#<proxy or group>` to send the
+//! queries through that outbound.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -25,6 +27,17 @@ enum Kind {
     Tcp,
     Tls,
     Https,
+    /// DNS over QUIC.
+    Quic,
+    /// DNS over HTTP/3.
+    H3,
+}
+
+/// A QUIC connection to a DoQ / DoH3 server, reused across queries.
+struct QuicConn {
+    conn: quinn::Connection,
+    _endpoint: quinn::Endpoint,
+    h3: Option<h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>>,
 }
 
 pub struct Upstream {
@@ -40,24 +53,31 @@ pub struct Upstream {
     reg: RegistryCell,
     pool: Mutex<Vec<BoxedStream>>,
     addr: Mutex<Option<(IpAddr, Instant)>>,
+    quic: tokio::sync::Mutex<Option<Arc<QuicConn>>>,
 }
 
 impl Upstream {
     /// Parses one nameserver entry. `bootstrap` (plain-IP default
     /// nameservers) resolves hostnames such as `dns.alidns.com`.
     pub fn parse(spec: &str, bootstrap: Arc<Vec<SocketAddr>>, reg: RegistryCell) -> Result<Self, String> {
-        let (main, detour) = match spec.split_once('#') {
-            Some((m, d)) => {
-                let d = d.split('&').next().unwrap_or("").trim();
-                (m.trim(), if d.is_empty() || d.eq_ignore_ascii_case("DIRECT") || d.contains('=') { None } else { Some(d.to_string()) })
+        let (main, detour, h3) = match spec.split_once('#') {
+            Some((m, frag)) => {
+                // `#proxy`, `#proxy&h3=true`, `#h3=true`
+                let parts: Vec<&str> = frag.split('&').map(str::trim).collect();
+                let d = parts.first().copied().unwrap_or("");
+                let h3 = parts.iter().any(|p| p.eq_ignore_ascii_case("h3=true"));
+                (m.trim(), if d.is_empty() || d.eq_ignore_ascii_case("DIRECT") || d.contains('=') { None } else { Some(d.to_string()) }, h3)
             }
-            None => (spec.trim(), None),
+            None => (spec.trim(), None, false),
         };
         let (kind, rest) = match main.split_once("://") {
             Some(("udp", r)) => (Kind::Udp, r),
             Some(("tcp", r)) => (Kind::Tcp, r),
             Some(("tls", r)) => (Kind::Tls, r),
+            Some(("https", r)) if h3 => (Kind::H3, r),
             Some(("https", r)) => (Kind::Https, r),
+            Some(("h3", r)) => (Kind::H3, r),
+            Some(("quic", r)) => (Kind::Quic, r),
             Some((s, _)) => return Err(format!("dns server {spec}: {s}:// is not supported")),
             None if main == "system" || main.starts_with("dhcp") => return Err(format!("dns server {spec} is not supported")),
             None => (Kind::Udp, main),
@@ -68,8 +88,8 @@ impl Upstream {
         };
         let default_port = match kind {
             Kind::Udp | Kind::Tcp => 53,
-            Kind::Tls => 853,
-            Kind::Https => 443,
+            Kind::Tls | Kind::Quic => 853,
+            Kind::Https | Kind::H3 => 443,
         };
         let addr = Address::parse_authority(authority).unwrap_or_else(|| Address::new(authority, default_port));
         let (host, port) = (addr.host(), addr.port());
@@ -95,6 +115,7 @@ impl Upstream {
             reg,
             pool: Mutex::new(Vec::new()),
             addr: Mutex::new(None),
+            quic: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -107,6 +128,7 @@ impl Upstream {
         let res = tokio::time::timeout(TIMEOUT, async {
             match self.kind {
                 Kind::Udp => self.exchange_udp(query).await,
+                Kind::Quic | Kind::H3 => self.exchange_quic(query).await,
                 _ => self.exchange_stream(query).await,
             }
         })
@@ -166,6 +188,127 @@ impl Upstream {
             Some(t) => Box::new(t.wrap(raw).await?),
             None => raw,
         })
+    }
+
+    /// The QUIC connection for DoQ / DoH3, opened on first use.
+    async fn quic_conn(&self) -> io::Result<Arc<QuicConn>> {
+        let mut g = self.quic.lock().await;
+        if let Some(c) = g.as_ref() {
+            if c.conn.close_reason().is_none() {
+                return Ok(c.clone());
+            }
+        }
+        let datagrams = match &self.detour {
+            Some(d) => {
+                let reg = self.reg.get().ok_or_else(|| other("registry not ready"))?;
+                let (out, _) = reg.resolve(d, &self.target())?;
+                crate::outbound::dialer::Datagrams::Pipe(out.connect_udp(&self.target()).await?)
+            }
+            None => {
+                let peer = SocketAddr::new(self.server_ip().await?, self.port);
+                let sock = crate::net::udp_socket(peer).await?;
+                sock.connect(peer).await?;
+                crate::outbound::dialer::Datagrams::Socket(sock, peer)
+            }
+        };
+        let (socket, peer) = datagrams.into_quinn()?;
+        let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
+        let endpoint = quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, socket, runtime)?;
+        let alpn = if self.kind == Kind::H3 { "h3" } else { "doq" };
+        let tls = crate::outbound::tls::tls13_config(false, &[alpn.to_string()])?;
+        let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(tls)).map_err(|e| other(e.to_string()))?;
+        let mut cfg = quinn::ClientConfig::new(Arc::new(quic_tls));
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(Duration::from_secs(15)));
+        transport.max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap()));
+        cfg.transport_config(Arc::new(transport));
+        let conn = endpoint
+            .connect_with(cfg, peer, &self.host)
+            .map_err(|e| other(format!("dns {}: {e}", self.url)))?
+            .await
+            .map_err(|e| other(format!("dns {}: QUIC handshake failed: {e}", self.url)))?;
+        let h3 = if self.kind == Kind::H3 {
+            let (mut driver, send) = h3::client::new(h3_quinn::Connection::new(conn.clone())).await.map_err(|e| other(format!("dns {}: HTTP/3: {e}", self.url)))?;
+            tokio::spawn(async move {
+                let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+            });
+            Some(send)
+        } else {
+            None
+        };
+        let c = Arc::new(QuicConn { conn, _endpoint: endpoint, h3 });
+        *g = Some(c.clone());
+        Ok(c)
+    }
+
+    /// One query over the shared QUIC connection; a broken connection is
+    /// replaced once.
+    async fn exchange_quic(&self, query: &[u8]) -> io::Result<Vec<u8>> {
+        let mut last = None;
+        for _ in 0..2 {
+            let c = self.quic_conn().await?;
+            let r = if c.h3.is_some() { self.one_h3(&c, query).await } else { self.one_doq(&c, query).await };
+            match r {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    c.conn.close(0u32.into(), b"");
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.unwrap())
+    }
+
+    /// RFC 9250: one bidirectional stream per query, 2-byte length prefix,
+    /// message id 0.
+    async fn one_doq(&self, c: &QuicConn, query: &[u8]) -> io::Result<Vec<u8>> {
+        let e = |x: &dyn std::fmt::Display| other(format!("dns {}: {x}", self.url));
+        let (mut send, mut recv) = c.conn.open_bi().await.map_err(|x| e(&x))?;
+        let mut msg = (query.len() as u16).to_be_bytes().to_vec();
+        msg.extend_from_slice(query);
+        wire::set_id(&mut msg[2..], 0);
+        send.write_all(&msg).await.map_err(|x| e(&x))?;
+        let _ = send.finish();
+        let mut len = [0u8; 2];
+        recv.read_exact(&mut len).await.map_err(|x| e(&x))?;
+        let mut resp = vec![0u8; u16::from_be_bytes(len) as usize];
+        recv.read_exact(&mut resp).await.map_err(|x| e(&x))?;
+        if resp.len() >= 12 {
+            wire::set_id(&mut resp, wire::id(query));
+        }
+        Ok(resp)
+    }
+
+    async fn one_h3(&self, c: &QuicConn, query: &[u8]) -> io::Result<Vec<u8>> {
+        use bytes::Buf;
+        let e = |x: &dyn std::fmt::Display| other(format!("dns {}: HTTP/3: {x}", self.url));
+        let mut send = c.h3.clone().unwrap();
+        let authority = if self.port == 443 { self.host.clone() } else { format!("{}:{}", self.host, self.port) };
+        let req = http::Request::post(format!("https://{authority}{}", self.path))
+            .header("content-type", "application/dns-message")
+            .header("content-length", query.len())
+            .header("accept", "application/dns-message")
+            .body(())
+            .map_err(|x| e(&x))?;
+        let mut stream = send.send_request(req).await.map_err(|x| e(&x))?;
+        stream.send_data(bytes::Bytes::copy_from_slice(query)).await.map_err(|x| e(&x))?;
+        stream.finish().await.map_err(|x| e(&x))?;
+        let resp = stream.recv_response().await.map_err(|x| e(&x))?;
+        if resp.status() != http::StatusCode::OK {
+            return Err(other(format!("dns {}: HTTP {}", self.url, resp.status().as_u16())));
+        }
+        let mut body = Vec::new();
+        while let Some(mut chunk) = stream.recv_data().await.map_err(|x| e(&x))? {
+            while chunk.has_remaining() {
+                let n = chunk.chunk().len();
+                body.extend_from_slice(chunk.chunk());
+                chunk.advance(n);
+            }
+            if body.len() > 65535 {
+                return Err(other(format!("dns {}: response too large", self.url)));
+            }
+        }
+        Ok(body)
     }
 
     /// TCP / DoT / DoH over pooled keep-alive connections; a pooled
@@ -276,7 +419,15 @@ mod tests {
         let u = up("tcp://8.8.8.8:5353#DIRECT");
         assert_eq!((u.kind, u.port, u.detour.as_deref()), (Kind::Tcp, 5353, None));
         let u = up("https://doh.pub/dns-query#节点选择&h3=false");
-        assert_eq!(u.detour.as_deref(), Some("节点选择"));
-        assert!(Upstream::parse("quic://dns.adguard.com", Arc::new(vec![]), Arc::new(std::sync::OnceLock::new())).is_err());
+        assert_eq!((u.kind, u.detour.as_deref()), (Kind::Https, Some("节点选择")));
+        let u = up("quic://dns.adguard.com");
+        assert_eq!((u.kind, u.port), (Kind::Quic, 853));
+        let u = up("https://dns.alidns.com/dns-query#h3=true");
+        assert_eq!((u.kind, u.port, u.detour.as_deref()), (Kind::H3, 443, None));
+        let u = up("https://dns.google/dns-query#PROXY&h3=true");
+        assert_eq!((u.kind, u.detour.as_deref()), (Kind::H3, Some("PROXY")));
+        let u = up("h3://cloudflare-dns.com/dns-query");
+        assert_eq!((u.kind, u.path.as_str()), (Kind::H3, "/dns-query"));
+        assert!(Upstream::parse("dhcp://en0", Arc::new(vec![]), Arc::new(std::sync::OnceLock::new())).is_err());
     }
 }

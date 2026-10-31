@@ -55,6 +55,8 @@ pub struct Settings {
     pub app_rules: Vec<AppRule>,
     /// Domain / IP routing (域名 / IP 分流), after the app rules.
     pub route_rules: Vec<RouteRule>,
+    /// Live speed in the menu bar (macOS) / drawn as the tray icon (Windows).
+    pub tray_speed: bool,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             selections: HashMap::new(),
             app_rules: Vec::new(),
             route_rules: Vec::new(),
+            tray_speed: cfg!(target_os = "macos"),
         }
     }
 }

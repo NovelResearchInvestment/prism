@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type RuleItem } from "../api";
 import { useApp } from "../state";
 import { RuleProviders } from "./Providers";
+import RuleTest from "./RuleTest";
 import { t } from "../i18n";
 
 export default function Rules() {
@@ -31,6 +32,7 @@ export default function Rules() {
         <span className="tag">{t("{n} 条", { n: rules.length })}</span>
         <input className="input" placeholder={t("过滤")} value={filter} onChange={(e) => setFilter(e.target.value)} />
       </div>
+      <RuleTest />
       {running && <RuleProviders onChange={load} />}
       {!running ? (
         <div className="empty">{t("内核未运行")}</div>

@@ -2,6 +2,7 @@
 # macOS TUN smoke test (CI runners have passwordless sudo): runs prism-core
 # as root with TUN + auto-route, then checks that
 #   - a utun interface comes up with 172.19.0.1 and the 0/1 + 128/1 routes,
+#     plus fdfe:dcba:9876::1 and the ::/1 + 8000::/1 IPv6 routes,
 #   - ordinary traffic flows through it (curl to the internet works and the
 #     core sees the connection on its Tun inbound, owned by curl),
 #   - everything is gone again once the core exits.
@@ -23,6 +24,7 @@ find-process-mode: always
 tun:
   enable: true
   auto-route: true
+  inet6-address: [fdfe:dcba:9876::1/126]
 proxies: []
 rules:
   - MATCH,DIRECT
@@ -45,6 +47,10 @@ IF=$(ifconfig | awk '/^utun/{name=$1} /inet 172\.19\.0\.1 /{print name}' | tr -d
 ROUTES=$(netstat -rn -f inet)
 echo "$ROUTES" | grep -Eq "^0/1 .*${IF:-utunX}" && ok "0/1 routed into $IF" || bad "0/1 route missing"
 echo "$ROUTES" | grep -Eq "^128.0/1 .*${IF:-utunX}" && ok "128.0/1 routed into $IF" || bad "128.0/1 route missing"
+ifconfig "${IF:-utunX}" 2>/dev/null | grep -q "inet6 fdfe:dcba:9876::1 " && ok "$IF has fdfe:dcba:9876::1" || bad "no IPv6 address on $IF"
+ROUTES6=$(netstat -rn -f inet6)
+echo "$ROUTES6" | grep -Eq "^::/1 .*${IF:-utunX}" && ok "::/1 routed into $IF" || bad "::/1 route missing"
+echo "$ROUTES6" | grep -Eq "^8000::/1 .*${IF:-utunX}" && ok "8000::/1 routed into $IF" || bad "8000::/1 route missing"
 
 echo "---- routes with TUN"
 netstat -rn -f inet | head -30
@@ -90,6 +96,7 @@ sudo pkill -f "$CORE" || true
 sleep 2
 ifconfig | grep -q "inet 172.19.0.1 " && bad "utun still up after exit" || ok "utun removed after exit"
 netstat -rn -f inet | grep -Eq "^0/1 " && bad "0/1 route left behind" || ok "routes removed after exit"
+netstat -rn -f inet6 | grep -Eq "^::/1 " && bad "::/1 route left behind" || ok "IPv6 routes removed after exit"
 code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 https://www.example.com/ || true)
 [ "$code" = "200" ] && ok "network fine after exit" || bad "network broken after exit: HTTP $code"
 

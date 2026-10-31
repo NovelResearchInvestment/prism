@@ -10,6 +10,11 @@
 //!   (`proxy-server-nameserver`, else direct `nameserver`s, else
 //!   `default-nameserver`), so resolving a proxy server never depends on
 //!   that proxy, and it never returns fake addresses.
+//!
+//! With `fallback:` servers, A / AAAA queries that would go to the main
+//! servers race both; the main answer is kept unless one of its addresses
+//! matches `fallback-filter` (outside `geoip-code`, or in `ipcidr`), and
+//! names in `fallback-filter.domain` only ask the fallback servers.
 
 pub mod fakeip;
 pub mod upstream;
@@ -31,8 +36,28 @@ use upstream::Upstream;
 
 type Servers = Arc<Vec<Arc<Upstream>>>;
 
+/// When the fallback servers' answer replaces the main one.
+struct Fallback {
+    servers: Servers,
+    /// Addresses of `geoip-code` are trusted.
+    geoip: Option<crate::geo::IpSet>,
+    ipcidr: Vec<ipnet::IpNet>,
+    domain: DomainMatcher,
+}
+
+impl Fallback {
+    /// Whether an address in the main answer means it is polluted.
+    fn bad_ip(&self, ip: IpAddr) -> bool {
+        if crate::common::is_private_ip(ip) {
+            return false;
+        }
+        self.geoip.as_ref().is_some_and(|g| !g.contains(ip)) || self.ipcidr.iter().any(|n| n.contains(&ip))
+    }
+}
+
 pub struct Resolver {
     main: Servers,
+    fallback: Option<Fallback>,
     lookup_servers: Servers,
     policy: Vec<(DomainMatcher, Servers)>,
     pub fake: Option<Arc<FakeIpPool>>,
@@ -93,6 +118,7 @@ pub fn build(
         warnings.push("dns: no usable nameserver, DNS module disabled".into());
         return (None, warnings);
     }
+    let fallback_servers = parse_list(&cfg.fallback);
 
     // Patterns: domains plus geosite categories.
     let mut geo_codes: Vec<String> = Vec::new();
@@ -114,7 +140,8 @@ pub fn build(
     };
     let policy_keys: Vec<Vec<String>> = cfg.nameserver_policy.iter().map(|(k, _)| split(k)).collect();
     let filter_keys: Vec<String> = cfg.fake_ip_filter.iter().flat_map(|k| split(k)).collect();
-    for p in policy_keys.iter().flatten().chain(filter_keys.iter()) {
+    let fallback_domains: Vec<String> = cfg.fallback_filter.domain.iter().flat_map(|k| split(k)).collect();
+    for p in policy_keys.iter().flatten().chain(filter_keys.iter()).chain(fallback_domains.iter()) {
         if let Some(code) = p.strip_prefix("geosite:") {
             geo_codes.push(code.to_string());
         }
@@ -150,6 +177,36 @@ pub fn build(
         .map(|(k, s)| (matcher(k), Arc::new(s)))
         .collect();
     let fake_filter = matcher(&filter_keys);
+    let fallback_domain = matcher(&fallback_domains);
+    let fallback = if fallback_servers.is_empty() {
+        None
+    } else {
+        let f = &cfg.fallback_filter;
+        let geoip = if f.geoip && !f.geoip_code.is_empty() {
+            let code = f.geoip_code.to_ascii_lowercase();
+            match crate::geo::load_geoip(&home.join("geoip.dat"), std::slice::from_ref(&code)) {
+                Ok(mut m) => m.remove(&code),
+                Err(e) => {
+                    warnings.push(format!("dns: geoip.dat: {e}; fallback-filter geoip ignored"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let ipcidr = f
+            .ipcidr
+            .iter()
+            .filter_map(|c| {
+                let n = c.parse::<ipnet::IpNet>().ok().or_else(|| c.parse::<IpAddr>().ok().map(ipnet::IpNet::from));
+                if n.is_none() {
+                    warnings.push(format!("dns: fallback-filter ipcidr {c} is invalid"));
+                }
+                n
+            })
+            .collect();
+        Some(Fallback { servers: Arc::new(fallback_servers), geoip, ipcidr, domain: fallback_domain })
+    };
 
     let fake = if cfg.enhanced_mode == "fake-ip" {
         let range = if cfg.fake_ip_range.is_empty() { "198.18.0.1/16" } else { &cfg.fake_ip_range };
@@ -182,6 +239,7 @@ pub fn build(
 
     let r = Resolver {
         main: Arc::new(main),
+        fallback,
         lookup_servers: Arc::new(lookup_servers),
         policy,
         fake,
@@ -197,6 +255,7 @@ pub fn build(
 /// Cache-key tag for the main server list and for lookups.
 const MAIN: usize = usize::MAX;
 const LOOKUP: usize = usize::MAX - 1;
+const FALLBACK: usize = usize::MAX - 2;
 
 impl Resolver {
     pub fn is_fake(&self, ip: IpAddr) -> bool {
@@ -240,7 +299,8 @@ impl Resolver {
             }
         }
         let (servers, tag) = self.servers_for(&q.name);
-        match self.exchange(&servers, tag, &q.name, q.qtype, query).await {
+        let res = if tag == MAIN { self.exchange_main(&servers, tag, &q.name, q.qtype, query).await } else { self.exchange(&servers, tag, &q.name, q.qtype, query).await };
+        match res {
             Ok(mut r) => {
                 wire::set_id(&mut r, wire::id(query));
                 Some(r)
@@ -266,7 +326,7 @@ impl Resolver {
         let mut last = None;
         for qt in qtypes {
             let q = wire::query(rand::random(), &name, qt);
-            match self.exchange(&self.lookup_servers.clone(), LOOKUP, &name, qt, &q).await {
+            match self.exchange_main(&self.lookup_servers.clone(), LOOKUP, &name, qt, &q).await {
                 Ok(r) => {
                     if let Some((ips, _)) = wire::answers(&r) {
                         out.extend(ips.into_iter().map(|(ip, _)| ip));
@@ -282,6 +342,48 @@ impl Resolver {
             return Err(last.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{name}: no address"))));
         }
         Ok(out)
+    }
+
+    /// [`Resolver::exchange`] on the main (or lookup) servers, with the
+    /// fallback servers when configured: both are asked at once, and the
+    /// main answer wins unless it is empty or has a filtered address.
+    async fn exchange_main(&self, servers: &Servers, tag: usize, name: &str, qtype: u16, query: &[u8]) -> io::Result<Vec<u8>> {
+        let fb = match &self.fallback {
+            Some(f) if qtype == wire::TYPE_A || qtype == wire::TYPE_AAAA => f,
+            _ => return self.exchange(servers, tag, name, qtype, query).await,
+        };
+        if fb.domain.matches(name) {
+            return self.exchange(&fb.servers, FALLBACK, name, qtype, query).await;
+        }
+        let main = self.exchange(servers, tag, name, qtype, query);
+        let other = self.exchange(&fb.servers, FALLBACK, name, qtype, query);
+        tokio::pin!(main, other);
+        let mut early = None;
+        let main_res = loop {
+            tokio::select! {
+                r = &mut main => break r,
+                r = &mut other, if early.is_none() => early = Some(r),
+            }
+        };
+        if let Ok(r) = &main_res {
+            let ips = wire::answers(r).map(|(a, _)| a).unwrap_or_default();
+            if !ips.is_empty() && ips.iter().all(|(ip, _)| !fb.bad_ip(*ip)) {
+                return main_res;
+            }
+        }
+        let fb_res = match early {
+            Some(r) => r,
+            None => other.await,
+        };
+        match (fb_res, main_res) {
+            (Ok(r), _) => {
+                tracing::debug!("dns {name}: using the fallback answer");
+                Ok(r)
+            }
+            // Fallback failed: a main answer is better than none.
+            (Err(_), Ok(r)) => Ok(r),
+            (Err(e), Err(_)) => Err(e),
+        }
     }
 
     /// Cached exchange racing all servers of a group; the first usable

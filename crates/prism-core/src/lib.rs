@@ -15,6 +15,7 @@ pub mod domain;
 pub mod geo;
 pub mod http;
 pub mod hub;
+pub mod mrs;
 pub mod inbound;
 pub mod net;
 pub mod outbound;
@@ -263,12 +264,12 @@ pub async fn build(mut profile: Profile, home: &Path, env: &BuildEnv) -> Result<
         let entries = if rc.kind == "inline" {
             Ok(rc.inline.clone())
         } else {
-            match provider::load(&rc.kind, rc.url.as_deref(), path.as_ref().unwrap(), rc.interval).await {
+            match provider::load_bytes(&rc.kind, rc.url.as_deref(), path.as_ref().unwrap(), rc.interval).await {
                 Ok((content, warn)) => {
                     if let Some(w) = warn {
                         warnings.push(format!("{what}: {w}"));
                     }
-                    provider::rule_entries(&rc.format, &content)
+                    provider::rule_entries(&rc.format, &rc.behavior, &content)
                 }
                 Err(e) => Err(e),
             }

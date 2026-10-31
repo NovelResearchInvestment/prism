@@ -10,6 +10,8 @@ export function setLang(l: Lang) {
   current = l;
 }
 
+export const getLang = (): Lang => current;
+
 /** `t("{n} 个节点", { n: 3 })` */
 export function t(zh: string, vars?: Record<string, string | number>): string {
   let s = current === "en" ? (EN[zh] ?? zh) : zh;

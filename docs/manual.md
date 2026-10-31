@@ -37,13 +37,15 @@
 ### 概览
 - **实时速度 / 流量统计**：上传、下载速度曲线，总流量，活动连接数，代理端口。
 - **内核**：在 Prism 内核、Mihomo、sing-box 之间切换（见第 3 节）。未安装的内核会显示「未安装 · 去设置下载」。
-- **流量接管**：系统代理、TUN 模式开关（见第 4 节）。
+- **流量接管**：系统代理、TUN 模式开关（见第 4 节），以及 **局域网共享**（见下）。
 - **代理模式**：
   - **规则**：按订阅里的规则分流（通常国内直连、其余走代理）。
   - **全局**：全部流量走 `GLOBAL` 组选中的节点。
   - **直连**：全部直连，不经过代理。
 - **当前订阅**：启用中的订阅名称和前几个代理组当前选中的节点。
 - **最近 30 天流量**：每天经过内核的上传（紫色）和下载（蓝色）流量，鼠标移上去显示当天数字，右上角是本月合计。数据保存在数据目录的 `traffic.json`，只在 Prism 运行时统计（三种内核都支持），保留约 400 天。
+- **应用流量**：今天 / 7 天 / 30 天里每个程序用了多少流量（上传 / 下载），以及主要走了哪些出口（如 `东京 77% · DIRECT 15%`）。按连接统计，内核需要能识别程序（Windows / macOS 上三种内核都可以）；识别不到程序的连接记为「未知程序」。数据保存在 `app_traffic.json`，保留 90 天。
+- **局域网共享**：点 **二维码** 打开，开关即「允许局域网连接」。窗口列出本机的局域网地址（有多个网卡时可选）和代理端口，并显示 `http://地址:端口` 的二维码；手机在 Wi-Fi 设置里把代理设为「手动」，填入地址和端口即可（HTTP 和 SOCKS5 都在这个端口）。共享没有密码，只在可信的网络中开启；手机连不上时，检查防火墙是否允许内核在「专用网络」上接收连接。
 
 ### 代理
 - 按代理组显示节点；组的顺序与订阅中一致。
@@ -54,6 +56,8 @@
 - 延迟颜色：绿色 < 300 ms，黄色 < 800 ms，橙色更慢，红色「超时」表示测试失败。
 - 节点选择会按订阅分别记住，重启内核或 Prism 后自动恢复。
 - **解锁检测**：检测 Netflix、YouTube Premium、Prime Video、TikTok、ChatGPT、Claude、Gemini 能否使用及所在地区。检测经当前的规则和所选节点进行（和浏览器开着系统代理访问时一样），需要先启动内核；换节点后可 **重新检测**。结果为「可用 / 部分可用（如 Netflix 仅自制剧）/ 不可用 / 无法判断（连接失败或遇到验证页）」。
+- **节点质量**：每个节点最近 1 / 6 / 24 小时的延迟曲线（红色竖线是失败），以及平均延迟、抖动和失败比例，按稳定性排序（延迟 + 2 × 抖动 + 失败惩罚）。数据来自自动测速组（url-test 等）的定时测试、手动测速，以及 Prism 每 5 分钟对正在使用的节点的测试；保存在 `quality.json`，保留 24 小时。对可手动选择的组，可以一键 **选用最稳定的** 节点。
+- **带宽测速**：逐个经节点下载测试文件（Cloudflare 或 CacheFly），测出实际下载速度和首包时间，结果按速度排序。每个节点测 5 / 8 / 15 秒，会消耗相应的流量。测速在 Prism 里直接用 Prism 内核的协议实现进行，所以三种内核下都能用（Prism 内核不支持的节点协议会显示「失败」）；开着 TUN 时测速连接会绕过虚拟网卡。
 - 订阅含 `proxy-providers` 时，顶部的 **代理集合** 卡片列出每个集合的类型、节点数和更新时间，可单独 **测速** 或 **更新**（HTTP 类型）。更新后内核热重载，已选节点保持不变。
 
 ### 订阅
@@ -78,12 +82,14 @@
 ### 连接
 - 实时列出经过内核的连接：主机、发起连接的**程序**（鼠标悬停显示完整路径）、入站类型和 TCP / UDP、命中的规则、链路（如 `节点选择 → 自动选择 → 东京`）、速度和流量。
 - 可按主机 / 程序 / 规则 / 节点过滤，**暂停** 刷新，单独 **关闭** 某个连接或 **全部关闭**。
+- **地图**：切换到地图视图，在世界地图上显示连接去向：绿色圆圈是本机（按系统时区推断所在地），菱形是出口节点所在地，蓝点是目标所在地（越大连接越多，有流量时闪动）；连线分为直连（绿）、到节点（紫）和节点到目标（蓝），越粗速度越快。右侧列出目标地区和出口节点的连接数与速度，鼠标移到某个地区上会突出相关连线。位置用本地的 `geoip.dat` 查询，不会联网；内网地址和解析不到的域名计入「位置未知」。过滤条件同样作用于地图。
 - 某条连接后面的 **分流** 按钮：直接为这个程序添加应用分流规则（见下面的「应用分流」）。
 - **导出**：把当前列表导出为 Excel（`.xlsx`）、CSV、JSON、HTML 或 Markdown 文件。输入了过滤条件时只导出过滤后的连接；想导出某一刻的状态，可先 **暂停**。文件保存到「下载」文件夹（`prism-connections-日期-时间.扩展名`），并在资源管理器中选中。
   - 导出的列：开始时间、主机、目标 IP、端口、来源、程序、程序路径、入站、网络、规则、规则内容、链路、上传 / 下载（字节）、导出时的上传 / 下载速度（字节/秒）。流量和速度在 Excel 和 JSON 中是数字，可以直接排序、求和。
   - CSV 带 UTF-8 BOM，用 Excel 打开中文不会乱码；以 `=`、`+`、`-`、`@` 开头的内容前会加 `'`，防止被当作公式执行。
 
 ### 规则
+- **规则测试**：输入域名、IP 或网址（如 `https://chatgpt.com/c/1`），可选填程序名（`chrome.exe`）并选 TCP / UDP，显示会命中第几条规则、规则原文，以及最终出口（沿代理组当前的选择一直到具体节点，如 `节点选择 → 自动选择 → 香港 01`）。需要 IP 的规则（`IP-CIDR`、`GEOIP` 等）会先解析域名：内核运行时用内核的 DNS（不会得到 fake-ip），否则用系统解析。测试用的是当前订阅加上应用分流、域名分流规则，与三种内核实际使用的规则相同；不需要内核运行（运行时还能显示组当前选择的节点）。全局 / 直连模式下会提示规则不生效。
 - 显示内核实际加载的规则（不受支持而被跳过的规则不会出现在这里，原因见日志）。
 - 订阅含 `rule-providers` 时，顶部的 **规则集合** 卡片列出每个规则集的类型、条数和更新时间，HTTP 类型可单独 **更新**。
 
@@ -139,6 +145,7 @@
 | 快捷键 | 显示 / 隐藏主界面、开关系统代理、开关 TUN、切换规则 / 全局 / 直连模式的全局快捷键（见下） |
 | 开机自启 | 登录 Windows 时自动启动 Prism，切换后立即生效（见下） |
 | 静默启动 | 开机自启时只在托盘运行，不弹出主界面；需点 **保存** |
+| 托盘图标显示网速 / 菜单栏网速 | Windows：托盘图标改为两行数字，上行是上传、下行是下载（每秒字节，如 `1.2M`）；macOS：菜单栏图标旁显示 `↑1.2M ↓3.4M`（macOS 默认开启）。无论是否开启，鼠标悬停在托盘图标上都会显示当前网速；需点 **保存** |
 | 接管 clash:// 链接 | 让机场面板的「一键导入 Clash」打开 Prism，切换后立即生效（见下） |
 | TUN 服务 | 安装、更新、卸载 TUN 服务（见第 4 节） |
 | 备份与同步 | WebDAV 云端备份与恢复、导出 / 导入备份文件（见下） |
@@ -147,6 +154,7 @@
 修改端口、密钥、局域网、日志级别或统一延迟后点 **保存**，运行中的内核会自动重启。
 
 ### 快捷键
+- **命令面板**：在 Prism 窗口中按 `Ctrl+K`（macOS 为 `⌘K`），或点侧栏的「搜索 / 命令」。可搜索并跳转页面、切换规则 / 全局 / 直连模式、开关 TUN 和系统代理、启动 / 停止内核；内核运行时输入节点名即可直接切换到该节点（只列出可手动选择的组）。用 ↑↓ 选择、Enter 执行、Esc 关闭。
 - 在设置页「外观与快捷键」中点击某个动作的输入框，按下组合键（如 `Ctrl+Alt+P`）即可设置，按 Backspace 清除；点 **保存** 后生效。
 - 快捷键是全局的，Prism 最小化到托盘时也有效。
 - 组合键需包含 Ctrl / Alt / Shift / Win 中的至少一个（F1–F12 可单独使用）。格式不对或已被其他程序占用时，保存后会提示哪一个没有注册成功。
@@ -215,15 +223,18 @@ append-proxies:
 | TLS 指纹（`client-fingerprint`） | ✅（Chrome 指纹） | ✅ | ✅ |
 | VMess（AEAD） | ✅ | ✅ | ✅ |
 | WebSocket / HTTPUpgrade / gRPC 传输 | ✅ | ✅ | ✅ |
-| HTTP/2、xhttp 等其他传输 | ❌ | 部分 | 部分 |
+| HTTP/2 传输 | ✅ | ✅ | ✅ |
+| xhttp 传输（stream-one / stream-up / packet-up） | ✅ | ✅ | ❌ |
+| Shadowsocks 2022（`2022-blake3-*`，含多用户 `iPSK:uPSK`） | ✅ | ✅ | ✅ |
 | 经代理转发 UDP | ✅（每个目标一条会话） | ✅ | ✅ |
 | TUN 模式 | ✅ | ✅ | ✅ |
 | DNS 模块 / fake-ip | ✅ | ✅ | ✅ |
-| proxy-providers / rule-providers | ✅（规则集仅 yaml / text 格式） | ✅ | — |
+| proxy-providers / rule-providers | ✅（规则集 yaml / text / mrs） | ✅ | — |
+| DNS `fallback`、DoQ（`quic://`）、DoH3 | ✅ | ✅ | 部分 |
 | 应用分流（按程序选择出口） | ✅ | ✅ | ✅ |
 
-- 订阅只用 AnyTLS / Shadowsocks / Trojan / VLESS（含 Reality / Vision）/ Hysteria2 / TUIC / WireGuard 节点：**Prism 内核**即可，体积小、启动快，TCP 和 UDP 都可经代理。
-- 订阅含 HTTP/2、xhttp 等其他传输的节点、带插件的 Shadowsocks 节点，或用到 `.mrs` 规则集：切换到 **Mihomo** 或 **sing-box**。
+- 订阅只用 AnyTLS / Shadowsocks（含 2022）/ Trojan / VLESS（含 Reality / Vision）/ VMess / Hysteria2 / TUIC / WireGuard 节点：**Prism 内核**即可，体积小、启动快，TCP 和 UDP 都可经代理。
+- 订阅含 kcp / quic 等其他传输的节点、带插件的 Shadowsocks 节点：切换到 **Mihomo** 或 **sing-box**（xhttp 节点用 Prism 内核或 Mihomo）。
 - 同一份订阅三个内核通用，Prism 会自动转换格式（见第 5、8 节）。Prism 内核遇到不支持的节点或规则会跳过，并在日志中给出警告。
 
 ## 4. 系统代理与 TUN 模式
@@ -239,7 +250,7 @@ append-proxies:
   - 通过 TLS SNI / HTTP Host 识别域名，按域名规则分流；
   - 接管发往 53 端口的 DNS 请求：启用了 DNS 模块（见 6.6）时由它应答（包括 fake-ip）；否则发给某个 DNS 服务器的查询原样转发给该服务器（绕过虚拟网卡），发给虚拟网卡自身 DNS 地址的查询转发到 `dns.default-nameserver`（默认 `223.5.5.5`、`119.29.29.29`）；
   - 其他 UDP（包括 QUIC）按规则分流，可经代理转发；
-  - 只接管 IPv4。
+  - IPv4 和 IPv6 都接管：虚拟网卡另有 IPv6 地址 `fdfe:dcba:9876::1`，并加上 `::/1`、`8000::/1` 路由，所以 IPv6 流量也会按规则分流，不会绕过代理；内核自己的 IPv6 连接同样绑定到物理网卡。IPv6 设置失败时（例如系统禁用了 IPv6）TUN 仍以仅 IPv4 的方式运行，日志中会说明。三种内核在 Prism 中开启 TUN 时都会接管 IPv6。
 - 在 Prism 里打开 TUN 时，如果订阅没有启用 `dns`，会自动加上 fake-ip 的 DNS 配置（`doh.pub`、`dns.alidns.com`），Prism 和 Mihomo 内核都会使用它。
 - sing-box 内核的 TUN：订阅启用了 `dns` 时沿用它的 `nameserver`（包括 `#代理` 写法）、fake-ip 地址段和 `fake-ip-filter`；没有启用时，国内域名用 `223.5.5.5`、其他域名经代理组用 `1.1.1.1` 查询（即使订阅最后一条规则是直连）。
 - 节点地址是本机（`127.0.0.1`，例如串联本机的另一个代理程序）时，Prism 内核的 TUN 也能连上（v0.1.3 及更早版本会失败）。
@@ -392,7 +403,8 @@ Prism 内核会复用与服务端的 TLS 会话：新连接不需要重新握手
 
 | 字段 | 说明 |
 |---|---|
-| `cipher` | Prism 内核支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` |
+| `cipher` | Prism 内核支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`，以及 Shadowsocks 2022：`2022-blake3-aes-128-gcm`、`2022-blake3-aes-256-gcm`、`2022-blake3-chacha20-poly1305` |
+| `password` | 2022 方法的密码是 base64 编码的密钥（aes-128 为 16 字节，其余 32 字节）；多用户 / 中转服务器写成 `iPSK:uPSK`（多个 iPSK 用冒号连接，仅 AES 方法）。TCP 和 UDP 都可用 |
 | `password` | 密码 |
 
 带 `plugin`（obfs / v2ray-plugin 等）的节点会被跳过，只能在 Mihomo 内核下使用；`2022-blake3-*` 系列加密 Prism 内核不支持（节点被跳过），Mihomo / sing-box 内核可用。
@@ -437,6 +449,8 @@ UDP 以 VMess 自身的 UDP 请求转发（每个目标一条连接）。
 | `ws` | `ws-opts: { path: /路径, headers: { Host: 域名 } }` | WebSocket |
 | `ws` + `ws-opts.v2ray-http-upgrade: true` | 同上 | HTTPUpgrade：只用 WebSocket 的升级请求，之后直接传输（sing-box 中为 `httpupgrade` 传输） |
 | `grpc` | `grpc-opts: { grpc-service-name: 服务名 }` | gRPC（HTTP/2，`/服务名/Tun`） |
+| `h2` | `h2-opts: { host: [域名], path: /路径 }` | HTTP/2：一条 `PUT` 请求双向传输（需 TLS，ALPN 为 `h2`；sing-box 中为 `http` 传输） |
+| `xhttp` | `xhttp-opts: { path: /路径, host: 域名, mode: auto, x-padding-bytes: 100-1000 }` | Xray 的 xhttp（SplitHTTP），走 HTTP/2。`mode`：`stream-one`（一条 POST 双向传输）、`stream-up`（GET 下载 + 一条流式 POST 上传）、`packet-up`（GET 下载 + 按序号的多个 POST 上传，适合 CDN）；`auto`（默认）在 REALITY 下用 stream-one，否则用 packet-up。可与 TLS、REALITY、TLS 指纹叠加。不支持 `download-settings`（分离上下行），sing-box 不支持 xhttp |
 | `http`、`h2` 等 | | Prism 内核不支持，这样的节点会被跳过 |
 
 - 开启 TLS 且没写 `alpn` 时，WebSocket / HTTPUpgrade 使用 `http/1.1`，gRPC 使用 `h2`。
@@ -603,7 +617,22 @@ dns:
 | `https://dns.alidns.com/dns-query` | DNS over HTTPS |
 | 以上任意写法后加 `#组名或节点名` | 通过该代理查询（如 `https://1.1.1.1/dns-query#PROXY`）；`#DIRECT` 表示直连 |
 
-不支持 `quic://`、`h3://`、`dhcp://`、`system`，以及 `fallback` / `fallback-filter`（会忽略并警告）。
+还支持 DNS over QUIC：`quic://dns.alidns.com`（默认端口 853），以及 DNS over HTTP/3：`https://dns.alidns.com/dns-query#h3=true` 或 `h3://cloudflare-dns.com/dns-query`；两者都复用一条 QUIC 连接，同样可以加 `#代理`（如 `quic://dns.adguard-dns.com#节点选择`）。不支持 `dhcp://`、`system`。
+
+**fallback**（防污染）：
+
+```yaml
+dns:
+  nameserver: [223.5.5.5, 119.29.29.29]
+  fallback: ['https://1.1.1.1/dns-query', 'quic://dns.adguard-dns.com']
+  fallback-filter:
+    geoip: true          # 默认 true：主服务器返回的地址不在 geoip-code 内，就改用 fallback 的结果
+    geoip-code: CN       # 默认 CN
+    ipcidr: [240.0.0.0/4]       # 返回这些地址也视为被污染
+    domain: ['+.google.com']    # 这些域名直接只问 fallback（也可写 geosite:分类）
+```
+
+有 `fallback` 时，A / AAAA 查询同时发给 `nameserver` 和 `fallback`：主服务器的结果非空且每个地址都通过过滤（局域网地址总是通过）就用它，不必等 fallback；否则用 fallback 的结果（fallback 失败时仍用主服务器的结果）。`nameserver-policy` 命中的域名不经过 fallback。内核自己的解析（直连目标、代理服务器域名）同样适用。`geoip` 过滤需要 `geoip.dat`。
 
 **域名写法**（`fake-ip-filter`、`nameserver-policy` 的键）：`example.com` 仅该域名；`+.example.com` 该域名及所有子域名；`.example.com` 所有子域名；`*.example.com` 恰好一级子域名；`geosite:分类`（可写 `geosite:cn,private`）。
 
@@ -681,7 +710,7 @@ rules:
 | `ipcidr` | `91.108.4.0/22`、`2001:b28:f23d::/48` |
 | `classical` | 不带目标的规则：`DOMAIN-SUFFIX,google.com`、`IP-CIDR,1.0.0.0/8`、`DST-PORT,22`、`NETWORK,udp` 等（不支持其中的 `GEOSITE` / `GEOIP` / `RULE-SET`） |
 
-- `format: yaml` 时内容为 `payload:` 列表；`format: text` 时每行一条，`#` 开头为注释。mihomo 的二进制 `mrs` 格式不支持。
+- `format: yaml` 时内容为 `payload:` 列表；`format: text` 时每行一条，`#` 开头为注释；`format: mrs` 是 mihomo 的二进制规则集（如 MetaCubeX meta-rules-dat 的 `.mrs` 文件），支持 `behavior: domain` 和 `ipcidr`（mrs 本身不支持 classical），文件里的类型与 `behavior` 不一致时会跳过并警告。域名中间带通配符的条目（如 `a.*.example.com`）不支持，会计入跳过的条数。
 - 下载、缓存、刷新和热重载与代理集合相同。
 
 ## 7. 分享链接语法
@@ -769,7 +798,7 @@ wg://...（同上）
 socks5://用户名:密码@服务器:端口#节点名
 ```
 
-以上节点类型和 WS / HTTPUpgrade / gRPC 传输三个内核都可用；其他传输（`h2`、`xhttp` 等）只能在 Mihomo / sing-box 内核下使用。
+以上节点类型和 WS / HTTPUpgrade / gRPC / HTTP/2 传输三个内核都可用。VLESS / Trojan 链接里 `type=h2`（或 `type=http`）是 HTTP/2 传输，`type=xhttp&path=/路径&host=域名&mode=auto` 是 xhttp（Prism 内核和 Mihomo 可用）；`ss://` 链接可以直接写 2022 方法，如 `ss://2022-blake3-aes-128-gcm:密钥（base64，需 URL 编码）@服务器:端口#名称`。其他传输（`kcp`、`quic` 等）只能在 Mihomo / sing-box 内核下使用。
 
 ## 8. sing-box JSON 与格式转换
 

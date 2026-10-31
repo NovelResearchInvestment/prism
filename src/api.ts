@@ -34,6 +34,7 @@ export interface Settings {
   selections: Record<string, Record<string, string>>;
   app_rules: AppRule[];
   route_rules: RouteRule[];
+  tray_speed: boolean;
 }
 
 export interface Usage {
@@ -207,6 +208,46 @@ export interface ConnectionsResp {
   connections: Connection[] | null;
 }
 
+export interface SpeedProgress {
+  name: string;
+  speed: { bytes: number; secs: number; mbps: number; ttfb: number } | null;
+  error: string | null;
+  done: boolean;
+}
+
+export interface LanAddr {
+  ip: string;
+  iface: string;
+}
+
+export interface AppTotal {
+  /** Program name; empty when the core didn't know it. */
+  name: string;
+  path: string;
+  upload: number;
+  download: number;
+  exits: [string, number][];
+}
+
+export interface NodeStats {
+  name: string;
+  /** [unix seconds, ms] — 0 ms = failed. */
+  samples: [number, number][];
+  avg: number | null;
+  jitter: number | null;
+  loss: number;
+  score: number | null;
+}
+
+export interface RuleTestResult {
+  host: string;
+  port: number;
+  ip: string | null;
+  hit: { index: number | null; kind: string; payload: string; target: string; line: string; resolved: boolean };
+  total: number;
+  warnings: string[];
+}
+
 export interface RuleItem {
   type: string;
   payload: string;
@@ -236,6 +277,14 @@ export const api = {
   setAppRules: (rules: AppRule[]) => invoke<void>("set_app_rules", { rules }),
   setMergeProfiles: (ids: string[]) => invoke<void>("set_merge_profiles", { ids }),
   setRouteRules: (rules: RouteRule[]) => invoke<void>("set_route_rules", { rules }),
+  geoLocate: (hosts: string[]) => invoke<Record<string, string | null>>("geo_locate", { hosts }),
+  nodeServers: () => invoke<Record<string, string>>("node_servers"),
+  speedTest: (names: string[], url: string, seconds: number) => invoke<SpeedProgress[]>("speed_test", { names, url, seconds }),
+  lanAddresses: () => invoke<LanAddr[]>("lan_addresses"),
+  setAllowLan: (enable: boolean) => invoke<void>("set_allow_lan", { enable }),
+  appTraffic: (days: number) => invoke<AppTotal[]>("app_traffic", { days }),
+  nodeQuality: () => invoke<NodeStats[]>("node_quality"),
+  testRule: (target: string, network: string, process: string) => invoke<RuleTestResult>("test_rule", { target, network, process }),
   setProfileInterval: (id: string, minutes: number) => invoke<void>("set_profile_interval", { id, minutes }),
   setAutostart: (enable: boolean) => invoke<void>("set_autostart", { enable }),
   setClashLinks: (enable: boolean) => invoke<void>("set_clash_links", { enable }),

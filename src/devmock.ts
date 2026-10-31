@@ -11,6 +11,7 @@ export function installDevMock() {
   const settings = {
     core: "prism",
     mixed_port: 7899,
+    tray_speed: false,
     controller_port: 9097,
     secret: "preview",
     mode: "rule",
@@ -108,6 +109,12 @@ export function installDevMock() {
         conn("2", "api.telegram.org", 1, "ProcessName", "Telegram.exe", ["东京", "节点选择"]),
         conn("3", "steamcdn-a.akamaihd.net", 2, "ProcessPath", "D:\\Games\\Steam\\steam.exe", ["DIRECT"]),
         conn("4", "weixin.qq.com", 3, "GeoSite", "cn", ["DIRECT"], "udp"),
+        conn("5", "chatgpt.com", 0, "DomainSuffix", "chatgpt.com", ["美国 洛杉矶", "节点选择"]),
+        conn("6", "www.netflix.com", 0, "GeoSite", "netflix", ["新加坡", "流媒体"]),
+        conn("7", "github.com", 4, "GeoSite", "github", ["日本 东京", "节点选择"]),
+        conn("8", "www.bbc.co.uk", 0, "Match", "", ["香港 01", "自动选择", "节点选择"]),
+        conn("9", "www.bilibili.com", 0, "GeoSite", "cn", ["DIRECT"]),
+        conn("10", "api.deepl.com", 4, "Match", "", ["日本 东京", "节点选择"]),
       ],
     },
   };
@@ -167,6 +174,76 @@ export function installDevMock() {
     core_versions: () => ({ prism: "prism-core preview", mihomo: null, singbox: null }),
     profile_outbounds: () => ({ groups: ["节点选择", "自动选择"], proxies: ["东京", "香港"] }),
     list_processes: () => processes,
+    speed_test: async (a) => {
+      await new Promise((r) => setTimeout(r, 1200));
+      return (a.names as string[]).map((name, i) =>
+        i === 4
+          ? { name, speed: null, error: "connect timeout", done: true }
+          : { name, speed: { bytes: 1e8, secs: 8, mbps: [212, 95.4, 48.2, 160, 0, 33.7, 87, 140][i % 8], ttfb: 180 + i * 40 }, error: null, done: true },
+      );
+    },
+    lan_addresses: () => [
+      { ip: "192.168.1.157", iface: "以太网" },
+      { ip: "192.168.31.155", iface: "WLAN" },
+    ],
+    set_allow_lan: (a) => {
+      settings.allow_lan = a.enable as boolean;
+    },
+    app_traffic: (a) => {
+      const k = Number(a.days);
+      return [
+        { name: "chrome.exe", path: "C:\Program Files\Google\Chrome\chrome.exe", upload: 42e6 * k, download: 1.9e9 * k, exits: [["日本 东京", 1.5e9 * k], ["DIRECT", 3e8 * k], ["美国 洛杉矶", 1e8 * k]] },
+        { name: "steam.exe", path: "D:\Games\Steam\steam.exe", upload: 5e6 * k, download: 1.1e9 * k, exits: [["DIRECT", 1.1e9 * k]] },
+        { name: "Telegram.exe", path: "", upload: 30e6 * k, download: 210e6 * k, exits: [["香港 01", 2.4e8 * k]] },
+        { name: "Code.exe", path: "", upload: 4e6 * k, download: 60e6 * k, exits: [["日本 东京", 4e7 * k], ["DIRECT", 2.4e7 * k]] },
+        { name: "", path: "", upload: 1e6 * k, download: 9e6 * k, exits: [["DIRECT", 1e7 * k]] },
+      ];
+    },
+    node_servers: () => Object.fromEntries(nodeNames.map((n) => [n, `${n}.example`])),
+    geo_locate: (a) => {
+      const where: Record<string, string> = {
+        "www.google.com": "US", "api.telegram.org": "NL", "steamcdn-a.akamaihd.net": "CN", "weixin.qq.com": "CN", "chatgpt.com": "US",
+        "www.netflix.com": "SG", "github.com": "US", "www.bbc.co.uk": "GB", "www.bilibili.com": "CN", "api.deepl.com": "DE",
+        "香港 01.example": "HK", "香港 02.example": "HK", "日本 东京.example": "JP", "日本 大阪.example": "JP", "新加坡.example": "SG",
+        "美国 洛杉矶.example": "US", "台湾.example": "TW", "韩国 首尔.example": "KR",
+      };
+      return Object.fromEntries((a.hosts as string[]).map((h) => [h, where[h] ?? null]));
+    },
+    node_quality: () => {
+      const now = Math.floor(Date.now() / 1000);
+      const series = (base: number, spread: number, fail: number, seed: number) => {
+        const out: [number, number][] = [];
+        let r = seed;
+        for (let ts = now - 24 * 3600; ts < now; ts += 300) {
+          r = (r * 9301 + 49297) % 233280;
+          const v = r / 233280;
+          out.push([ts, v < fail ? 0 : Math.round(base + spread * Math.sin(ts / 3000 + seed) + spread * v)]);
+        }
+        return out;
+      };
+      return nodeNames.map((name, i) => ({
+        name,
+        samples: series(50 + i * 25, 10 + ((i * 37) % 70), [0, 0.03, 0.15, 0, 0.01, 0.3, 0, 0.05][i], i + 1),
+        avg: null,
+        jitter: null,
+        loss: 0,
+        score: null,
+      }));
+    },
+    test_rule: (a) => {
+      const host = String(a.target).replace(/^\w+:\/\//, "").split(/[/:?]/)[0].toLowerCase();
+      const google = host.endsWith("google.com");
+      return {
+        host,
+        port: 443,
+        ip: google ? null : "104.18.32.47",
+        hit: google
+          ? { index: 3, kind: "DOMAIN-SUFFIX", payload: "google.com", target: "节点选择", line: "DOMAIN-SUFFIX,google.com,节点选择", resolved: false }
+          : { index: 41, kind: "GEOIP", payload: "CN", target: "DIRECT", line: "GEOIP,CN,DIRECT", resolved: true },
+        total: 128,
+        warnings: [],
+      };
+    },
     set_route_rules: (a) => {
       settings.route_rules = a.rules as typeof settings.route_rules;
     },

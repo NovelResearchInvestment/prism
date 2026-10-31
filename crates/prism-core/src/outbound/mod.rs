@@ -8,6 +8,7 @@ pub mod dialer;
 pub mod group;
 pub mod hysteria2;
 pub mod shadowsocks;
+pub mod ss2022;
 pub mod tls;
 pub mod transport;
 pub mod trojan;
@@ -96,6 +97,7 @@ pub fn build_proxy(p: &ProxyConfig, dialer: Dialer) -> anyhow::Result<Arc<dyn Ou
     }
     Ok(match p.kind() {
         ProxyKind::AnyTls => Arc::new(anytls::AnyTls::new(p, dialer)?),
+        ProxyKind::Shadowsocks if ss2022::is_2022(p.cipher.as_deref().unwrap_or("")) => Arc::new(ss2022::Ss2022::new(p, dialer)?),
         ProxyKind::Shadowsocks => Arc::new(shadowsocks::Shadowsocks::new(p, dialer)?),
         ProxyKind::Trojan => Arc::new(trojan::Trojan::new(p, dialer)?),
         ProxyKind::Vless => Arc::new(vless::Vless::new(p, dialer)?),

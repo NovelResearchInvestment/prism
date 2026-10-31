@@ -87,6 +87,97 @@ async fn request(reg: &Registry, name: &str, url: &str) -> std::io::Result<u128>
     }
 }
 
+/// Download speed through one outbound.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Speed {
+    /// Body bytes received.
+    pub bytes: u64,
+    /// Seconds from the first body byte to the end.
+    pub secs: f64,
+    /// Megabits per second over `secs`.
+    pub mbps: f64,
+    /// Milliseconds until the response head arrived (connect + handshakes).
+    pub ttfb: u64,
+}
+
+impl Speed {
+    fn new(bytes: u64, secs: f64, ttfb: u64) -> Self {
+        let mbps = if secs > 0.0 { bytes as f64 * 8.0 / secs / 1e6 } else { 0.0 };
+        Speed { bytes, secs, mbps, ttfb }
+    }
+}
+
+/// Downloads `url` through `name` for at most `limit` (after the response
+/// head), calling `progress` about twice a second. Plain HTTP/1.1 GET;
+/// redirects are not followed.
+pub async fn speed_test(
+    reg: &Registry,
+    name: &str,
+    url: &str,
+    limit: Duration,
+    mut progress: impl FnMut(&Speed),
+) -> std::io::Result<Speed> {
+    let u = url::Url::parse(url).map_err(|e| other(e.to_string()))?;
+    let host = u.host_str().ok_or_else(|| other("test url has no host"))?.to_string();
+    let https = u.scheme() == "https";
+    let port = u.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
+    let target = Address::new(&host, port);
+    let path = match u.query() {
+        Some(q) => format!("{}?{q}", u.path()),
+        None => u.path().to_string(),
+    };
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: prism\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
+    let start = Instant::now();
+    let (out, _) = reg.resolve(name, &target)?;
+    let connect = async {
+        let stream = out.connect(&target).await?;
+        let s: crate::common::BoxedStream = if https {
+            Box::new(Tls::new(&host, false, &["http/1.1".to_string()], None)?.wrap(stream).await?)
+        } else {
+            stream
+        };
+        Ok::<_, std::io::Error>(s)
+    };
+    let mut s = tokio::time::timeout(Duration::from_secs(10), connect)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout"))??;
+    s.write_all(req.as_bytes()).await?;
+    s.flush().await?;
+    let (status, _) = tokio::time::timeout(Duration::from_secs(10), read_head(&mut s))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "no response"))??;
+    if !(200..300).contains(&status) {
+        return Err(other(format!("HTTP {status}")));
+    }
+    let ttfb = start.elapsed().as_millis() as u64;
+    let body_start = Instant::now();
+    let deadline = body_start + limit;
+    let mut buf = vec![0u8; 64 * 1024];
+    let (mut bytes, mut last_report) = (0u64, Instant::now());
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        match tokio::time::timeout(deadline - now, s.read(&mut buf)).await {
+            Ok(Ok(0)) | Err(_) => break,
+            Ok(Ok(n)) => bytes += n as u64,
+            Ok(Err(e)) if bytes > 0 => {
+                tracing::debug!("speed test {name}: {e}");
+                break;
+            }
+            Ok(Err(e)) => return Err(e),
+        }
+        if last_report.elapsed() >= Duration::from_millis(500) {
+            last_report = Instant::now();
+            progress(&Speed::new(bytes, body_start.elapsed().as_secs_f64(), ttfb));
+        }
+    }
+    let speed = Speed::new(bytes, body_start.elapsed().as_secs_f64(), ttfb);
+    progress(&speed);
+    Ok(speed)
+}
+
 /// Sends the test request. With `unified` (mihomo's unified-delay), a first
 /// request warms the connection and only the second, keep-alive request is
 /// timed, so handshakes (proxy and TLS) don't count.

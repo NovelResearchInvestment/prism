@@ -107,6 +107,32 @@ impl Address {
         };
         Ok(addr)
     }
+
+    /// [`Address::read_socks`] for an in-memory packet; advances `r` past the address.
+    pub fn read_socks_sync(r: &mut &[u8]) -> io::Result<Self> {
+        let short = || invalid("short address");
+        let (&atyp, rest) = r.split_first().ok_or_else(short)?;
+        let (host, rest): (IpAddr, &[u8]) = match atyp {
+            1 if rest.len() >= 6 => (Ipv4Addr::from(<[u8; 4]>::try_from(&rest[..4]).unwrap()).into(), &rest[4..]),
+            4 if rest.len() >= 18 => (Ipv6Addr::from(<[u8; 16]>::try_from(&rest[..16]).unwrap()).into(), &rest[16..]),
+            3 => {
+                let (&len, rest) = rest.split_first().ok_or_else(short)?;
+                let len = len as usize;
+                if rest.len() < len + 2 {
+                    return Err(short());
+                }
+                let host = std::str::from_utf8(&rest[..len]).map_err(|_| invalid("bad domain"))?;
+                let port = u16::from_be_bytes([rest[len], rest[len + 1]]);
+                *r = &rest[len + 2..];
+                return Ok(Address::new(host, port));
+            }
+            1 | 4 => return Err(short()),
+            _ => return Err(invalid("bad address type")),
+        };
+        let port = u16::from_be_bytes([rest[0], rest[1]]);
+        *r = &rest[2..];
+        Ok(Address::Ip(SocketAddr::new(host, port)))
+    }
 }
 
 impl fmt::Display for Address {

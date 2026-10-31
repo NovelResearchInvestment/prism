@@ -24,23 +24,31 @@ GUI 只和 Clash 兼容 API 通信；订阅会按所选内核自动转换：
 ## prism-core 功能
 
 - 入站：mixed（SOCKS5 + HTTP CONNECT + 普通 HTTP）单端口，含 SOCKS5 UDP ASSOCIATE；TUN
-- 出站：**AnyTLS**（会话复用，新连接不再重复握手）、Shadowsocks AEAD（aes-128/256-gcm、chacha20-ietf-poly1305）、Trojan、VLESS（TCP/TLS）、SOCKS5、HTTP、DIRECT、REJECT
+- 出站：**AnyTLS**（会话复用，新连接不再重复握手）、Shadowsocks AEAD（aes-128/256-gcm、chacha20-ietf-poly1305）与 **Shadowsocks 2022**（`2022-blake3-*`，含多用户 `iPSK:uPSK` 身份头）、Trojan、VLESS（TCP/TLS）、SOCKS5、HTTP、DIRECT、REJECT
 - **UDP 经代理**：Shadowsocks UDP、Trojan UDP、VLESS UDP、AnyTLS（sing-box UDP-over-TCP v2）、SOCKS5 UDP ASSOCIATE、直连（每个目标一条会话）
 - 代理组：select / url-test / fallback / load-balance，以及 GLOBAL；`use` / `filter` / `exclude-filter`
-- 规则：DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、GEOSITE、GEOIP、IP-CIDR(6)、SRC-IP-CIDR、DST-PORT、SRC-PORT、IN-TYPE、NETWORK、RULE-SET、MATCH；读取 v2ray 格式 `geosite.dat` / `geoip.dat`
-- **DNS 模块**：UDP / TCP / DoT / DoH 上游，`#代理` 经代理查询，nameserver-policy（含 `geosite:`）、fake-ip + fake-ip-filter、缓存、hosts、`listen` 端口
+- 规则：DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、GEOSITE、GEOIP、IP-CIDR(6)、SRC-IP-CIDR、DST-PORT、SRC-PORT、IN-TYPE、NETWORK、RULE-SET、MATCH；读取 v2ray 格式 `geosite.dat` / `geoip.dat`；规则集支持 yaml / text / **mrs**（mihomo 二进制格式）
+- **DNS 模块**：UDP / TCP / DoT / DoH / **DoQ（`quic://`）/ DoH3** 上游，`#代理` 经代理查询，nameserver-policy（含 `geosite:`）、**fallback + fallback-filter**（geoip / ipcidr / domain）、fake-ip + fake-ip-filter、缓存、hosts、`listen` 端口
 - **proxy-providers / rule-providers**：http / file / inline，缓存文件、定时刷新、内容变化自动热重载（domain / ipcidr / classical，yaml / text）
 - 热重载：`PUT /configs`，监听端口不中断，节点选择和 fake-ip 映射保留
 - 模式：规则 / 全局 / 直连
 - 延迟测试支持 mihomo 的 `unified-delay`（只计第二次请求），设置页「统一延迟」开关
 - Clash API：`/proxies`、`/proxies/{name}/delay`、`/group/{name}/delay`、`/connections`、`/rules`、`/configs`、`/traffic`、`/providers/proxies`、`/providers/rules`、`/version`
 
-- TUN 模式（需管理员 / root 权限）：Windows 用 wintun 虚拟网卡，macOS 用 utun；smoltcp 用户态协议栈；自动路由 0.0.0.0/1、128.0.0.0/1，内核自身连接绑定物理网卡防回环（Windows `IP_UNICAST_IF`，macOS `IP_BOUND_IF` + 网卡专属默认路由）；嗅探 TLS SNI / HTTP Host 按域名分流；DNS 由 DNS 模块应答（未启用时转发上游）；UDP 按规则分流、可经代理。命令行：`prism-core -f config.yaml --tun`
+- TUN 模式（需管理员 / root 权限）：Windows 用 wintun 虚拟网卡，macOS 用 utun；smoltcp 用户态协议栈；自动路由 0.0.0.0/1、128.0.0.0/1 和 IPv6 的 ::/1、8000::/1，内核自身连接绑定物理网卡防回环（Windows `IP_UNICAST_IF`，macOS `IP_BOUND_IF` + 网卡专属默认路由）；嗅探 TLS SNI / HTTP Host 按域名分流；DNS 由 DNS 模块应答（未启用时转发上游）；UDP 按规则分流、可经代理。命令行：`prism-core -f config.yaml --tun`
 
 - **应用分流**：PROCESS-NAME / PROCESS-PATH（含 `-REGEX`）规则，通过系统的 TCP/UDP 连接表识别程序（Windows IP Helper，macOS `pcblist_n`）；客户端「应用分流」页按程序选择出口，三种内核通用
 - **软件更新**：启动时检查 GitHub Releases，下载后校验发布签名（minisign，版本绑定）再安装
 - **代理页**：全部测速、按延迟 / 名称排序、搜索节点；托盘菜单直接切换节点；**解锁检测**（Netflix、YouTube Premium、ChatGPT、Claude、Gemini 等）
 - **连接页导出**：把（过滤后的）连接导出为 Excel / CSV / JSON / HTML / Markdown
+- **连接地图**：世界地图上实时显示连接从本机经哪个节点去往哪里（离线 geoip 定位）
+- **规则测试**：输入域名 / IP / 网址，显示命中哪条规则、最终走哪个节点（三种内核通用）
+- **节点质量**：24 小时延迟曲线、抖动和失败率，按稳定性排序，一键选用最稳定的节点
+- **带宽测速**：经每个节点下载测试文件，测实际下载速度
+- **应用流量统计**：每个程序今天 / 7 天 / 30 天的流量和出口
+- **局域网共享**：一键允许局域网连接，显示地址二维码，手机扫码设置
+- **托盘 / 菜单栏网速**：macOS 菜单栏显示 ↑↓ 速度，Windows 可把托盘图标变成实时网速
+- **命令面板**：`Ctrl+K` / `⌘K` 搜索页面、切换模式 / TUN / 系统代理、直接切换节点
 - **覆写**：全局或按订阅的 Merge（YAML）和 Script（JavaScript，内置 Boa 引擎）
 - **域名分流**：自定义域名 / IP / GEOSITE / GEOIP 规则走指定出口，排在订阅规则之前，换订阅也保留；可从连接页一键添加
 - **合并订阅**：把其他订阅的节点加入当前订阅的代理组，规则仍用当前订阅的
@@ -54,10 +62,10 @@ GUI 只和 Clash 兼容 API 通信；订阅会按所选内核自动转换：
 - **TLS 指纹**：`client-fingerprint` 时使用自研 TLS 1.3 客户端，ClientHello 与 Chrome 一致（JA4 `t13d1516h2_8daaf6152771_d8a2da3f94cd`，X25519MLKEM768）
 - **VLESS Reality / Vision**（UDP 经 XUDP）、**Hysteria2**（QUIC，salamander 混淆，UDP 分片）
 - **TUIC v5**（native / quic 两种 UDP 模式，cubic / new_reno / bbr）、**WireGuard**（程序内协议栈，支持 WARP 的 reserved）
-- **VMess**（AEAD，aes-128-gcm / chacha20-poly1305 / none）与 **WebSocket / HTTPUpgrade / gRPC 传输**（VLESS、Trojan、VMess 通用，可叠加 TLS、REALITY 和 TLS 指纹）
+- **VMess**（AEAD，aes-128-gcm / chacha20-poly1305 / none）与 **WebSocket / HTTPUpgrade / gRPC / HTTP/2 / xhttp 传输**（VLESS、Trojan、VMess 通用，可叠加 TLS、REALITY 和 TLS 指纹；xhttp 支持 stream-one / stream-up / packet-up）
 - **链式代理**：`dialer-proxy` 和 `relay` 组，UDP 类协议也可经前一跳转发；**组合规则** `AND` / `OR` / `NOT` 与 `SRC-GEOIP`
 
-**暂不支持**（需要时切换到 mihomo / sing-box 内核）：HTTP/2、xhttp 等传输，旧式（非 AEAD）VMess 认证、Shadowsocks 插件、`mrs` 格式规则集、DNS fallback、QUIC/DoH3 上游、TUN 的 IPv6 路由。
+**暂不支持**（需要时切换到 mihomo / sing-box 内核）：kcp / quic 等传输、xhttp 的 download-settings（分离上下行），旧式（非 AEAD）VMess 认证、Shadowsocks 插件。
 
 > prism-core 的 TUN 已在真实网卡上使用：路由接管、DNS 劫持 + fake-ip、直连 TCP、经代理的 UDP 均正常；经代理的 TCP 曾因 fake-ip 被 IP 规则误判为直连，已修复（`crates/prism-core/tests/fake_ip_rules.rs`）。
 

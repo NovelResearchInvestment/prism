@@ -3,6 +3,7 @@ import { api, errText, fmtBytes, fmtSpeed, type AppRule, type Connection, type C
 import { useApp, usePoll } from "../state";
 import { AppRuleDialog } from "./Apps";
 import { RouteRuleDialog, useSaveRouteRules } from "./Routes";
+import ConnMap from "./ConnMap";
 import { t } from "../i18n";
 
 interface Row extends Connection {
@@ -77,6 +78,7 @@ export default function Connections() {
   const [rows, setRows] = useState<Row[]>([]);
   const [filter, setFilter] = useState("");
   const [paused, setPaused] = useState(false);
+  const [view, setView] = useState<"table" | "map">("table");
   const [exportOpen, setExportOpen] = useState(false);
   const [routeFor, setRouteFor] = useState<Partial<RouteRule> | null>(null);
   const saveRoutes = useSaveRouteRules();
@@ -126,6 +128,14 @@ export default function Connections() {
         <h1>{t("连接")}</h1>
         <span className="tag">{t("{n} 个", { n: rows.length })}</span>
         <input className="input" placeholder={t("过滤主机 / 程序 / 规则 / 节点")} value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <div className="seg">
+          <button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>
+            {t("列表")}
+          </button>
+          <button className={view === "map" ? "on" : ""} onClick={() => setView("map")}>
+            {t("地图")}
+          </button>
+        </div>
         <button className="btn" onClick={() => setPaused(!paused)}>
           {paused ? t("继续") : t("暂停")}
         </button>
@@ -157,6 +167,8 @@ export default function Connections() {
       </div>
       {!running ? (
         <div className="empty">{t("内核未运行")}</div>
+      ) : view === "map" ? (
+        <ConnMap rows={shown} />
       ) : (
         <div className="table-wrap">
           <table>

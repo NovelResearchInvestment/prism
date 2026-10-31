@@ -393,6 +393,76 @@ impl Router {
     }
 }
 
+/// What the rule tester found for one destination.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Hit {
+    /// Position in the rule list; None = no rule matched (DIRECT).
+    pub index: Option<usize>,
+    pub kind: String,
+    pub payload: String,
+    pub target: String,
+    /// The rule as written, e.g. `DOMAIN-SUFFIX,google.com,PROXY`.
+    pub line: String,
+    /// Whether an IP rule was reached and so the domain had to be resolved.
+    pub resolved: bool,
+}
+
+impl Router {
+    /// [`Router::route`] for the rule tester: the destination IP is given
+    /// (looked up by the caller), and is only visible to rules from the first
+    /// IP rule without `no-resolve` on, like the real lookup.
+    pub fn test(&self, meta: &Metadata, dst_ip: Option<IpAddr>) -> Hit {
+        let mut resolved = meta.dst.ip().is_some();
+        for (i, rule) in self.rules.iter().enumerate() {
+            if rule.needs_ip() && !rule.no_resolve {
+                resolved = true;
+            }
+            let ip = meta.dst.ip().or(if resolved { dst_ip } else { None });
+            if rule.cond.matches(meta, ip) {
+                let mut line = format!("{},{}", rule.kind, rule.payload);
+                if rule.kind == "MATCH" {
+                    line = "MATCH".into();
+                }
+                line = format!("{line},{}", rule.target);
+                if rule.no_resolve {
+                    line.push_str(",no-resolve");
+                }
+                return Hit { index: Some(i), kind: rule.kind.clone(), payload: rule.payload.clone(), target: rule.target.clone(), line, resolved };
+            }
+        }
+        Hit { index: None, kind: String::new(), payload: String::new(), target: "DIRECT".into(), line: String::new(), resolved }
+    }
+}
+
+/// Builds the router of `profile` for the rule tester: rule-providers come
+/// from their cached files (downloaded when missing), geodata from `home`.
+pub async fn tester(profile: &crate::config::Profile, home: &Path) -> (Router, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut sets = HashMap::new();
+    for rc in &profile.rule_providers {
+        let entries = if rc.kind == "inline" {
+            Ok(rc.inline.clone())
+        } else {
+            let path = crate::provider::path_for(home, "rule_providers", &rc.name, &rc.path);
+            let load = crate::provider::load_bytes(&rc.kind, rc.url.as_deref(), &path, 0);
+            match tokio::time::timeout(Duration::from_secs(15), load).await {
+                Ok(Ok((content, _))) => crate::provider::rule_entries(&rc.format, &rc.behavior, &content),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(anyhow::anyhow!("download timed out")),
+            }
+        };
+        match entries {
+            Ok(e) => {
+                sets.insert(rc.name.clone(), Arc::new(RuleSet::new(&rc.name, &rc.behavior, &e, &mut warnings)));
+            }
+            Err(e) => warnings.push(format!("rule-provider {}: {e:#}", rc.name)),
+        }
+    }
+    let (router, w) = Router::build(&profile.rules, home, &sets);
+    warnings.extend(w);
+    (router, warnings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +501,29 @@ mod tests {
         let mut unknown = meta("example.com:443");
         unknown.process_checked = true;
         assert_eq!(route(unknown).await, "M");
+    }
+
+    #[test]
+    fn tester_reports_rule_and_late_resolution() {
+        let cfgs: Vec<RuleConfig> = [
+            "DOMAIN-SUFFIX,google.com,PROXY",
+            "IP-CIDR,10.0.0.0/8,LAN,no-resolve",
+            "IP-CIDR,1.0.0.0/8,ONE",
+            "MATCH,FINAL",
+        ]
+        .iter()
+        .map(|l| RuleConfig::parse(l).unwrap())
+        .collect();
+        let (r, _) = Router::build(&cfgs, Path::new("."), &HashMap::new());
+        let h = r.test(&meta("www.google.com:443"), None);
+        assert_eq!((h.index, h.target.as_str(), h.line.as_str()), (Some(0), "PROXY", "DOMAIN-SUFFIX,google.com,PROXY"));
+        assert!(!h.resolved);
+        // no-resolve rules don't see the looked-up address; the next IP rule does.
+        let h = r.test(&meta("x.example:443"), Some("10.1.1.1".parse().unwrap()));
+        assert_eq!((h.index, h.target.as_str()), (Some(3), "FINAL"));
+        let h = r.test(&meta("y.example:443"), Some("1.2.3.4".parse().unwrap()));
+        assert_eq!((h.index, h.target.as_str(), h.resolved), (Some(2), "ONE", true));
+        assert_eq!(r.test(&meta("10.2.2.2:80"), None).target, "LAN");
     }
 
     #[tokio::test]

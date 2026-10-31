@@ -75,11 +75,16 @@ pub struct ProxyConfig {
     pub alpn: Vec<String>,
     pub fingerprint: Option<String>,
     pub flow: Option<String>,
-    /// Transport: tcp (default), ws, grpc.
+    /// Transport: tcp (default), ws, httpupgrade, grpc, h2, xhttp.
     pub network: Option<String>,
+    /// Path / Host of ws, httpupgrade, h2 and xhttp.
     pub ws_path: Option<String>,
     pub ws_host: Option<String>,
     pub grpc_service: Option<String>,
+    /// xhttp: auto / stream-one / stream-up / packet-up.
+    pub xhttp_mode: Option<String>,
+    /// xhttp: `x_padding` length range, e.g. `100-1000`.
+    pub xhttp_padding: Option<String>,
     pub reality_public_key: Option<String>,
     pub reality_short_id: Option<String>,
     pub obfs: Option<String>,
@@ -304,6 +309,9 @@ impl Mode {
 pub struct TunConfig {
     pub enable: bool,
     pub auto_route: bool,
+    /// Give the adapter an IPv6 address and route IPv6 into it too
+    /// (`inet6-address` present).
+    pub ipv6: bool,
     /// Plain-IP DNS servers used for queries sent to the TUN's own DNS address.
     pub dns: Vec<String>,
 }
@@ -464,6 +472,30 @@ pub struct DnsConfig {
     pub proxy_server_nameserver: Vec<String>,
     /// (domain patterns, servers), in order.
     pub nameserver_policy: Vec<(String, Vec<String>)>,
+    /// Servers whose answer is used when the main one looks polluted.
+    #[serde(default)]
+    pub fallback: Vec<String>,
+    #[serde(default)]
+    pub fallback_filter: FallbackFilter,
+}
+
+/// `fallback-filter:` — when the main servers' answer is replaced by the
+/// fallback servers' (mihomo semantics).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FallbackFilter {
+    /// An address outside `geoip_code` means the answer is polluted.
+    pub geoip: bool,
+    pub geoip_code: String,
+    /// Addresses in these ranges mean polluted.
+    pub ipcidr: Vec<String>,
+    /// Names that always use the fallback servers.
+    pub domain: Vec<String>,
+}
+
+impl Default for FallbackFilter {
+    fn default() -> Self {
+        FallbackFilter { geoip: true, geoip_code: "CN".into(), ipcidr: Vec::new(), domain: Vec::new() }
+    }
 }
 
 /// One entry of `proxy-providers:`.

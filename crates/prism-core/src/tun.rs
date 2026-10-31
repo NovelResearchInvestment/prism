@@ -9,9 +9,11 @@
 //!   * UDP 443 (QUIC) is dropped so browsers fall back to TCP.
 //!   * Other UDP is relayed only when the rules send it to DIRECT.
 //!
-//! auto-route adds 0.0.0.0/1 + 128.0.0.0/1 on the adapter; the core's own
-//! sockets are pinned to the previous default interface (see net.rs). The
-//! routes disappear together with the adapter when the process exits.
+//! auto-route adds 0.0.0.0/1 + 128.0.0.0/1 on the adapter (and ::/1 +
+//! 8000::/1 with `inet6-address`, so IPv6 can't bypass the rules); the
+//! core's own sockets are pinned to the previous default interface (see
+//! net.rs). The routes disappear together with the adapter when the process
+//! exits. IPv6 setup is best-effort: if it fails, TUN runs IPv4-only.
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub async fn start(
@@ -34,6 +36,12 @@ pub use mac::start;
 const ADDR: std::net::Ipv4Addr = std::net::Ipv4Addr::new(172, 19, 0, 1);
 #[cfg(any(windows, target_os = "macos"))]
 const DNS: std::net::Ipv4Addr = std::net::Ipv4Addr::new(172, 19, 0, 2);
+/// The adapter's IPv6 address (unique local, /126).
+#[cfg(any(windows, target_os = "macos"))]
+const ADDR6: &str = "fdfe:dcba:9876::1";
+/// IPv6 split default routes.
+#[cfg(any(windows, target_os = "macos"))]
+const ROUTES6: [&str; 2] = ["::/1", "8000::/1"];
 #[cfg(any(windows, target_os = "macos"))]
 const MTU: usize = 9000;
 
@@ -196,7 +204,7 @@ mod win {
     use anyhow::{anyhow, bail, Context, Result};
     use tokio::sync::mpsc;
 
-    use super::{ADDR, MTU};
+    use super::{ADDR, ADDR6, MTU, ROUTES6};
     use crate::config::TunConfig;
     use crate::hub::Hub;
     use crate::net;
@@ -213,6 +221,18 @@ mod win {
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
             bail!("netsh {}: {msg}", args.join(" "));
+        }
+        Ok(())
+    }
+
+    /// IPv6 address and split default routes on the adapter.
+    fn ipv6(index: u32, auto_route: bool) -> Result<()> {
+        let iface = format!("interface={index}");
+        netsh(&["interface", "ipv6", "add", "address", &iface, &format!("address={ADDR6}/126"), "store=active"])?;
+        if auto_route {
+            for prefix in ROUTES6 {
+                netsh(&["interface", "ipv6", "add", "route", &format!("prefix={prefix}"), &iface, "metric=1", "store=active"])?;
+            }
         }
         Ok(())
     }
@@ -256,6 +276,11 @@ mod win {
             let iface = format!("interface={index}");
             for prefix in ["0.0.0.0/1", "128.0.0.0/1"] {
                 netsh(&["interface", "ipv4", "add", "route", &format!("prefix={prefix}"), &iface, "nexthop=0.0.0.0", "metric=1", "store=active"])?;
+            }
+        }
+        if cfg.ipv6 {
+            if let Err(e) = ipv6(index, cfg.auto_route) {
+                tracing::warn!("TUN: IPv6 not set up, IPv6 traffic bypasses the TUN: {e:#}");
             }
         }
         let session = Arc::new(adapter.start_session(wintun::MAX_RING_CAPACITY).map_err(|e| anyhow!("TUN session: {e}"))?);
@@ -303,7 +328,7 @@ mod mac {
     use tokio::io::unix::AsyncFd;
     use tokio::sync::mpsc;
 
-    use super::{ADDR, DNS, MTU};
+    use super::{ADDR, ADDR6, DNS, MTU, ROUTES6};
     use crate::config::TunConfig;
     use crate::hub::Hub;
     use crate::net;
@@ -391,6 +416,30 @@ mod mac {
         }
     }
 
+    /// IPv6 address and split default routes on the utun; the physical
+    /// interface gets a scoped IPv6 default route (when it has IPv6) for the
+    /// core's own pinned sockets, like IPv4.
+    fn ipv6(name: &str, phys: &str, auto_route: bool) -> Result<()> {
+        run("/sbin/ifconfig", &[name, "inet6", ADDR6, "prefixlen", "126"])?;
+        if let Ok(out) = run("/sbin/route", &["-n", "get", "-inet6", "default"]) {
+            let field = |k: &str| out.lines().find_map(|l| l.trim().strip_prefix(k).map(|n| n.trim().to_string()));
+            if let (Some(gw), Some(iface)) = (field("gateway:"), field("interface:")) {
+                if iface == phys {
+                    match run("/sbin/route", &["-n", "add", "-inet6", "-ifscope", phys, "default", &gw]) {
+                        Err(e) if !format!("{e:#}").contains("File exists") => tracing::warn!("no scoped IPv6 default route on {phys}: {e:#}"),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if auto_route {
+            for net in ROUTES6 {
+                run("/sbin/route", &["-n", "add", "-inet6", "-net", net, "-interface", name])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Strips / adds utun's 4-byte protocol family header.
     pub fn frame(p: &[u8]) -> Vec<u8> {
         let af = if p.first().is_some_and(|b| b >> 4 == 6) { libc::AF_INET6 } else { libc::AF_INET } as u32;
@@ -413,7 +462,12 @@ mod mac {
                 run("/sbin/route", &["-n", "add", "-net", net, "-interface", &name])?;
             }
         }
-        tracing::info!("TUN {name} up at {ADDR}, outbound bound to {phys_name} (if {phys}), auto-route={}", cfg.auto_route);
+        if cfg.ipv6 {
+            if let Err(e) = ipv6(&name, &phys_name, cfg.auto_route) {
+                tracing::warn!("TUN: IPv6 not set up, IPv6 traffic bypasses the TUN: {e:#}");
+            }
+        }
+        tracing::info!("TUN {name} up at {ADDR}, outbound bound to {phys_name} (if {phys}), auto-route={}, ipv6={}", cfg.auto_route, cfg.ipv6);
 
         // Safety: `fd` is owned by the AsyncFd from here on and closed only
         // when it is dropped, after deregistration.
