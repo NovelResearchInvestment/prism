@@ -698,6 +698,54 @@ td.ellipsis {
   text-overflow: ellipsis;
 }
 
+/* Connections: fixed columns, so a hovered row's larger text moves nothing. */
+.conn-table {
+  table-layout: fixed;
+  min-width: 1280px;
+}
+
+.conn-table th,
+.conn-table td {
+  padding: 0 8px;
+  height: 38px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conn-table td.ellipsis {
+  max-width: none;
+}
+
+/* The actions stay in view when the table scrolls sideways. */
+.conn-table th:last-child,
+.conn-table td:last-child {
+  position: sticky;
+  right: 0;
+  background: var(--panel);
+  overflow: visible;
+  box-shadow: -1px 0 0 var(--line);
+}
+
+.conn-table th:last-child {
+  z-index: 2;
+}
+
+.conn-table tbody tr:hover td {
+  background-color: var(--panel);
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.conn-table tbody tr:hover td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.conn-table tbody tr:hover td:last-child {
+  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
 .num {
   font-variant-numeric: tabular-nums;
   text-align: right;

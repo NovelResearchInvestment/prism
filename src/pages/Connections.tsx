@@ -83,6 +83,8 @@ export default function Connections() {
   const [routeFor, setRouteFor] = useState<Partial<RouteRule> | null>(null);
   const saveRoutes = useSaveRouteRules();
   const prev = useRef<Map<string, Connection>>(new Map());
+  // While the mouse is on a row the list holds still, so its buttons can be hit.
+  const hovering = useRef(false);
   const running = !!snap?.running;
 
   usePoll(
@@ -96,6 +98,12 @@ export default function Connections() {
         return { ...c, upSpeed: p ? c.upload - p.upload : 0, downSpeed: p ? c.download - p.download : 0 };
       });
       prev.current = next;
+      if (hovering.current) {
+        // Same rows in the same places: only the numbers update.
+        const fresh = new Map(out.map((c) => [c.id, c]));
+        setRows((old) => old.map((c) => fresh.get(c.id) ?? { ...c, upSpeed: 0, downSpeed: 0 }));
+        return;
+      }
       out.sort((a, b) => b.start.localeCompare(a.start));
       setRows(out);
     },
@@ -171,7 +179,20 @@ export default function Connections() {
         <ConnMap rows={shown} />
       ) : (
         <div className="table-wrap">
-          <table>
+          <table className="conn-table">
+            <colgroup>
+              <col />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 92 }} />
+              <col style={{ width: 92 }} />
+              <col style={{ width: 80 }} />
+              <col style={{ width: 80 }} />
+              <col style={{ width: 90 }} />
+              <col style={{ width: 170 }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>{t("主机")}</th>
@@ -187,7 +208,7 @@ export default function Connections() {
                 <th />
               </tr>
             </thead>
-            <tbody>
+            <tbody onMouseEnter={() => (hovering.current = true)} onMouseLeave={() => (hovering.current = false)}>
               {shown.map((c) => {
                 const m = c.metadata;
                 const host = `${m.host || m.destinationIP}:${m.destinationPort}`;
@@ -230,7 +251,13 @@ export default function Connections() {
                             {m.host ? t("域名") : "IP"}
                           </button>
                         )}
-                        <button className="btn sm danger" onClick={() => api.core("DELETE", `/connections/${c.id}`)}>
+                        <button
+                          className="btn sm danger"
+                          onClick={() => {
+                            api.core("DELETE", `/connections/${c.id}`);
+                            setRows((old) => old.filter((x) => x.id !== c.id));
+                          }}
+                        >
                           {t("关闭")}
                         </button>
                       </div>
