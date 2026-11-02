@@ -104,15 +104,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 3000);
+    const timer = setInterval(refresh, 3000);
     const un = listen("core-changed", () => refresh());
     const unUpdate = listen<UpdateInfo>("update-available", (e) => setUpdate(e.payload));
+    const unNodes = listen<string[]>("unsupported-nodes", (e) =>
+      toast(t("这些节点使用 xhttp 传输，sing-box 不支持，无法连接：{names}。可换用 Prism 或 mihomo 内核。", { names: e.payload.join("、") }), "err"),
+    );
     return () => {
-      clearInterval(t);
+      clearInterval(timer);
       un.then((f) => f());
       unUpdate.then((f) => f());
+      unNodes.then((f) => f());
     };
-  }, [refresh]);
+  }, [refresh, toast]);
 
   return (
     <AppCtx.Provider value={{ snap, refresh, toast, run, update, setUpdate }}>

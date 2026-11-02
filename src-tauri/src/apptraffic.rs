@@ -82,7 +82,11 @@ impl AppTraffic {
                 continue;
             }
             let m = &c["metadata"];
-            let name = m["process"].as_str().filter(|p| !p.is_empty()).unwrap_or("").to_string();
+            // sing-box reports only the path.
+            let name = match m["process"].as_str().filter(|p| !p.is_empty()) {
+                Some(p) => p.to_string(),
+                None => m["processPath"].as_str().map(prism_core::process::file_name).unwrap_or_default(),
+            };
             if let Some(p) = m["processPath"].as_str().filter(|p| !p.is_empty()) {
                 data.paths.insert(name.clone(), p.to_string());
             }

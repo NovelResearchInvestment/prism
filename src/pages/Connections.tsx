@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errText, fmtBytes, fmtSpeed, type AppRule, type Connection, type ConnectionsResp, type ExportFormat, type ExportTable, type RouteRule } from "../api";
 import { useApp, usePoll } from "../state";
 import { AppRuleDialog } from "./Apps";
@@ -85,7 +85,17 @@ export default function Connections() {
   const prev = useRef<Map<string, Connection>>(new Map());
   // While the mouse is on a row the list holds still, so its buttons can be hit.
   const hovering = useRef(false);
+  const listed = useRef<Set<string>>(new Set());
+  const [waiting, setWaiting] = useState(0);
   const running = !!snap?.running;
+
+  // Leaving the table by unmounting it fires no mouseleave.
+  useEffect(() => {
+    if (!running || view !== "table") {
+      hovering.current = false;
+      setWaiting(0);
+    }
+  }, [running, view]);
 
   usePoll(
     async () => {
@@ -95,16 +105,21 @@ export default function Connections() {
       const out = list.map((c) => {
         next.set(c.id, c);
         const p = prev.current.get(c.id);
-        return { ...c, upSpeed: p ? c.upload - p.upload : 0, downSpeed: p ? c.download - p.download : 0 };
+        // sing-box reports only the path.
+        const process = c.metadata.process || c.metadata.processPath?.split(/[\\/]/).pop();
+        return { ...c, metadata: { ...c.metadata, process }, upSpeed: p ? c.upload - p.upload : 0, downSpeed: p ? c.download - p.download : 0 };
       });
       prev.current = next;
       if (hovering.current) {
         // Same rows in the same places: only the numbers update.
         const fresh = new Map(out.map((c) => [c.id, c]));
         setRows((old) => old.map((c) => fresh.get(c.id) ?? { ...c, upSpeed: 0, downSpeed: 0 }));
+        setWaiting(out.filter((c) => !listed.current.has(c.id)).length);
         return;
       }
       out.sort((a, b) => b.start.localeCompare(a.start));
+      listed.current = new Set(out.map((c) => c.id));
+      setWaiting(0);
       setRows(out);
     },
     1000,
@@ -114,7 +129,7 @@ export default function Connections() {
   const f = filter.trim().toLowerCase();
   const shown = f
     ? rows.filter((c) =>
-        [c.metadata.host, c.metadata.destinationIP, c.metadata.process, c.rule, c.rulePayload, ...c.chains].some((x) =>
+        [c.metadata.host, c.metadata.destinationIP, c.metadata.process, c.metadata.processPath, c.rule, c.rulePayload, ...c.chains].some((x) =>
           x?.toLowerCase().includes(f),
         ),
       )
@@ -135,6 +150,11 @@ export default function Connections() {
       <div className="page-head">
         <h1>{t("连接")}</h1>
         <span className="tag">{t("{n} 个", { n: rows.length })}</span>
+        {waiting > 0 && !paused && (
+          <span className="tag accent" title={t("{n} 个新连接，鼠标移开后显示", { n: waiting })}>
+            {t("+{n} 新连接", { n: waiting })}
+          </span>
+        )}
         <input className="input" placeholder={t("过滤主机 / 程序 / 规则 / 节点")} value={filter} onChange={(e) => setFilter(e.target.value)} />
         <div className="seg">
           <button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>
@@ -239,7 +259,7 @@ export default function Connections() {
                       <div className="row" style={{ gap: 6 }}>
                         {m.process && (
                           <button className="btn sm" title={t("为这个程序设置出口")} onClick={() => setRuleFor({ value: m.process!, path: m.processPath || "" })}>
-                            {t("分流")}
+                            {t("应用")}
                           </button>
                         )}
                         {(m.host || m.destinationIP) && (

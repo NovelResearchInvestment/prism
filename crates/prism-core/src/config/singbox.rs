@@ -63,6 +63,12 @@ fn transport_json(p: &ProxyConfig) -> Option<Value> {
     }
 }
 
+/// Nodes on a transport sing-box lacks. They stay in the config, so groups
+/// and rules that name them stay valid, but can't reach their server.
+pub fn unsupported_nodes(p: &Profile) -> Vec<String> {
+    p.proxies.iter().filter(|x| x.network.as_deref() == Some("xhttp")).map(|x| x.name.clone()).collect()
+}
+
 pub fn emit_outbound(p: &ProxyConfig) -> Value {
     let mut o = Map::new();
     let ty = match p.kind() {
@@ -673,7 +679,6 @@ pub fn add_app_rules(v: &mut Value, routes: &[AppRoute]) -> Vec<String> {
     }
     let route = root.entry("route").or_insert_with(|| json!({}));
     if let Some(r) = route.as_object_mut() {
-        r.insert("find_process".into(), json!(true));
         let list = r.entry("rules").or_insert_with(|| json!([]));
         if let Some(list) = list.as_array_mut() {
             let lead = list
@@ -780,6 +785,10 @@ pub fn add_user_rules(v: &mut Value, user: &[UserRule]) -> Vec<String> {
 pub fn apply_overrides(v: &mut Value, o: &Overrides) {
     let Some(root) = v.as_object_mut() else { return };
     root.insert("inbounds".into(), inbounds(o));
+    // Lets the connections page show which program made each connection.
+    if let Some(r) = root.entry("route").or_insert_with(|| json!({})).as_object_mut() {
+        r.insert("find_process".into(), json!(true));
+    }
     if o.tun {
         // Make sure DNS from the TUN is answered by sing-box.
         let route = root.entry("route").or_insert_with(|| json!({}));
@@ -1011,6 +1020,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overrides_always_find_processes() {
+        let mut sb = json!({ "outbounds": [] });
+        apply_overrides(&mut sb, &overrides());
+        assert_eq!(sb["route"]["find_process"], true);
+    }
+
+    #[test]
+    fn xhttp_nodes_are_reported_as_unsupported() {
+        let p = crate::config::parse_any(
+            r#"
+proxies:
+  - {name: a, type: vless, server: x.test, port: 443, uuid: b831381d-6324-4d53-ad4f-8cda48b30811, tls: true, network: xhttp, xhttp-opts: {path: /x}}
+  - {name: b, type: vless, server: x.test, port: 443, uuid: b831381d-6324-4d53-ad4f-8cda48b30811, tls: true, network: ws}
+  - {name: c, type: trojan, server: x.test, port: 443, password: p}
+"#,
+        )
+        .unwrap();
+        assert_eq!(unsupported_nodes(&p), ["a"]);
+    }
+
+    #[test]
     fn tun_dns_follows_the_profile() {
         let mut o = overrides();
         o.tun = true;
@@ -1132,7 +1162,6 @@ rules:
         assert_eq!(rules[3], json!({ "process_name": [if cfg!(windows) { "chrome.exe" } else { "chrome" }], "outbound": "jp" }));
         assert_eq!(rules[4], json!({ "process_path": ["C:\\Games\\x.exe"], "outbound": "DIRECT" }));
         assert_eq!(rules[5], json!({ "process_name": ["ads.exe"], "action": "reject" }));
-        assert_eq!(sb["route"]["find_process"], true);
     }
 
     #[test]

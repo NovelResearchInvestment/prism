@@ -269,7 +269,7 @@ export const EN: Record<string, string> = {
   主机: "Host",
   程序: "App",
   链路: "Chain",
-  分流: "Route",
+  应用: "App",
   "已为 {app} 添加应用规则，内核已重新加载": "Added an app rule for {app}; the core reloaded",
 
   // Rules
@@ -447,6 +447,9 @@ export const EN: Record<string, string> = {
   "6 小时": "6 hours",
   "24 小时": "24 hours",
   "{n} 个连接": "{n} connections",
+  "+{n} 新连接": "+{n} new",
+  "{n} 个新连接，鼠标移开后显示": "{n} new, shown when the mouse leaves",
+  "这些节点使用 xhttp 传输，sing-box 不支持，无法连接：{names}。可换用 Prism 或 mihomo 内核。": "These nodes use the xhttp transport, which sing-box does not support, so they cannot connect: {names}. Use the Prism or mihomo core instead.",
   "本机（按系统时区推断：{c}）": "This computer (guessed from the time zone: {c})",
   "本机": "This computer",
   "到节点": "To node",

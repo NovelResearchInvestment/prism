@@ -744,6 +744,13 @@ async fn start(app: &AppHandle, st: &AppState) -> Res<()> {
     }
     st.core.start(app, &st.store, &s).await.map_err(e)?;
     apply_selections(&s).await;
+    if s.core == CoreKind::Singbox {
+        let names = core::singbox_unsupported_nodes(&st.store, &s);
+        if !names.is_empty() {
+            st.core.push_log(app, format!("[prism] 这些节点使用 xhttp 传输，sing-box 不支持，无法连接: {}", names.join(", ")));
+            let _ = app.emit("unsupported-nodes", names);
+        }
+    }
     let _ = app.emit("core-changed", ());
     refresh_tray(app);
     Ok(())

@@ -108,11 +108,17 @@ pub fn gemini(s: &Seen) -> Check {
     if s.status != 200 {
         return check("Gemini", Verdict::Unknown, None, Some(&format!("HTTP {}", s.status)));
     }
-    // The page carries this flag only where Gemini is offered.
-    if s.body.contains("45631641,null,true") {
+    // The flag that says whether Gemini is offered here, in the page's
+    // newer `"id":value` form (JSON-escaped in a script) or the older list.
+    let flag = |v: &str| {
+        s.body.contains(&format!("\\\"45631641\\\":{v}")) || s.body.contains(&format!("\"45631641\":{v}")) || s.body.contains(&format!("45631641,null,{v}"))
+    };
+    if flag("true") {
         check("Gemini", Verdict::Yes, None, None)
-    } else {
+    } else if flag("false") {
         check("Gemini", Verdict::No, None, None)
+    } else {
+        check("Gemini", Verdict::Unknown, None, Some("页面格式未识别"))
     }
 }
 
@@ -238,6 +244,10 @@ mod tests {
 
         assert_eq!(gemini(&seen("", 200, "[45631641,null,true]")).verdict, Verdict::Yes);
         assert_eq!(gemini(&seen("", 200, "[45631641,null,false]")).verdict, Verdict::No);
+        assert_eq!(gemini(&seen("", 200, r#"{\"45631641\":true,\"45841483\":false}"#)).verdict, Verdict::Yes);
+        assert_eq!(gemini(&seen("", 200, r#"{"45631641":true}"#)).verdict, Verdict::Yes);
+        assert_eq!(gemini(&seen("", 200, r#"{\"45631641\":false,\"45841483\":true}"#)).verdict, Verdict::No);
+        assert_eq!(gemini(&seen("", 200, "<html>captcha</html>")).verdict, Verdict::Unknown);
 
         assert_eq!(prime_video(&seen("", 200, r#""currentTerritory":"US""#)).region.as_deref(), Some("US"));
         assert_eq!(prime_video(&seen("", 200, "isServiceRestricted")).verdict, Verdict::No);

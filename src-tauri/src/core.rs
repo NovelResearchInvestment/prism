@@ -106,6 +106,14 @@ fn singbox_config(store: &Store, s: &Settings) -> Result<(Value, Vec<String>)> {
     Ok((doc, warnings))
 }
 
+/// Nodes of the active profile that can't connect through sing-box.
+pub fn singbox_unsupported_nodes(store: &Store, s: &Settings) -> Vec<String> {
+    active_profile_full(store, s)
+        .and_then(|(raw, _)| config::parse_any(&raw))
+        .map(|p| singbox::unsupported_nodes(&p))
+        .unwrap_or_default()
+}
+
 /// Remote rule-sets the sing-box config uses (the app downloads them).
 pub fn singbox_rule_sets(store: &Store, s: &Settings) -> Result<Vec<singbox::RemoteRuleSet>> {
     Ok(singbox::remote_rule_sets(&singbox_config(store, s)?.0))

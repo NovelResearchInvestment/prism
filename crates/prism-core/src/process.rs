@@ -191,13 +191,14 @@ mod imp {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, UNICODE_STRING};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
         MIB_TCPTABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID, MIB_UDP6TABLE_OWNER_PID, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID,
         TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
@@ -275,7 +276,56 @@ mod imp {
         }
     }
 
+    #[repr(C)]
+    struct SystemProcessIdInformation {
+        pid: usize,
+        image_name: UNICODE_STRING,
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQuerySystemInformation(class: u32, info: *mut core::ffi::c_void, len: u32, returned: *mut u32) -> i32;
+    }
+
+    /// `\Device\HarddiskVolume3\x\a.exe` to `C:\x\a.exe`; other devices stay as they are.
+    fn dos_path(nt: &str) -> String {
+        for letter in b'A'..=b'Z' {
+            let drive = [letter as u16, b':' as u16, 0];
+            let mut buf = [0u16; 512];
+            let n = unsafe { QueryDosDeviceW(drive.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+            if n == 0 {
+                continue;
+            }
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(n as usize);
+            let device = String::from_utf16_lossy(&buf[..end]);
+            if let Some(rest) = nt.strip_prefix(device.as_str()).filter(|r| r.starts_with('\\')) {
+                return format!("{}:{rest}", letter as char);
+            }
+        }
+        nt.to_string()
+    }
+
+    /// The image of a process this user may not open (services, elevated
+    /// programs): SystemProcessIdInformation needs no handle or privilege.
+    fn image_path_unopened(pid: u32) -> Option<String> {
+        const SYSTEM_PROCESS_ID_INFORMATION: u32 = 88;
+        let mut buf = [0u16; 2048];
+        let mut info = SystemProcessIdInformation {
+            pid: pid as usize,
+            image_name: UNICODE_STRING { Length: 0, MaximumLength: (buf.len() * 2) as u16, Buffer: buf.as_mut_ptr() },
+        };
+        let status = unsafe {
+            NtQuerySystemInformation(SYSTEM_PROCESS_ID_INFORMATION, (&raw mut info).cast(), size_of::<SystemProcessIdInformation>() as u32, std::ptr::null_mut())
+        };
+        let len = info.image_name.Length as usize / 2;
+        (status >= 0 && len > 0).then(|| dos_path(&String::from_utf16_lossy(&buf[..len])))
+    }
+
     fn image_path(pid: u32) -> Option<String> {
+        image_path_opened(pid).or_else(|| image_path_unopened(pid))
+    }
+
+    fn image_path_opened(pid: u32) -> Option<String> {
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if h.is_null() {
@@ -378,5 +428,14 @@ mod tests {
 
         assert!(find(Network::Tcp, "127.0.0.1:1".parse().unwrap()).is_none());
         assert!(list().iter().any(|x| x.path.to_ascii_lowercase() == me()));
+    }
+
+    /// services.exe runs as SYSTEM: an unelevated caller can't open it.
+    #[cfg(windows)]
+    #[test]
+    fn names_processes_it_cannot_open() {
+        let all = list();
+        let s = all.iter().find(|x| x.name.eq_ignore_ascii_case("services.exe")).expect("services.exe listed");
+        assert!(s.path.to_ascii_lowercase().ends_with(r":\windows\system32\services.exe"), "{}", s.path);
     }
 }
