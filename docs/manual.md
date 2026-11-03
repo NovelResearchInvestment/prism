@@ -1,6 +1,6 @@
 # Prism 使用手册（Windows）
 
-适用版本：v0.2.4（v0.2.4 新增自定义 GeoSite / GeoIP 地址；v0.2.3 新增链式代理、出口异常时拒绝、断网保护；v0.2.0 新增 Shadowsocks 2022、xhttp / HTTP/2 传输、mrs 规则集、DNS fallback / DoQ / DoH3、TUN 接管 IPv6、规则测试、节点质量、带宽测速、连接地图、应用流量、局域网共享、托盘网速、命令面板；v0.1.9 新增 macOS 版；v0.1.8 新增域名分流；v0.1.7 新增合并订阅；v0.1.6 新增 VMess、WebSocket / HTTPUpgrade / gRPC 传输、TUIC、WireGuard、Vision 的 UDP、链式代理、组合规则、按订阅覆写、连接导出）
+适用版本：v0.2.5（v0.2.5 新增链式代理可选代理组；v0.2.4 新增自定义 GeoSite / GeoIP 地址；v0.2.3 新增链式代理、出口异常时拒绝、断网保护；v0.2.0 新增 Shadowsocks 2022、xhttp / HTTP/2 传输、mrs 规则集、DNS fallback / DoQ / DoH3、TUN 接管 IPv6、规则测试、节点质量、带宽测速、连接地图、应用流量、局域网共享、托盘网速、命令面板；v0.1.9 新增 macOS 版；v0.1.8 新增域名分流；v0.1.7 新增合并订阅；v0.1.6 新增 VMess、WebSocket / HTTPUpgrade / gRPC 传输、TUIC、WireGuard、Vision 的 UDP、链式代理、组合规则、按订阅覆写、连接导出）
 
 - [1. 安装与首次使用](#1-安装与首次使用)
 - [2. 界面说明](#2-界面说明)
