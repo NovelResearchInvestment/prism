@@ -500,12 +500,17 @@ pub fn add_app_rules(v: &mut Value, routes: &[AppRoute]) -> Vec<String> {
             warnings.push(format!("app rule skipped: {e}"));
             continue;
         }
-        if !names.contains(&r.target) {
+        let target = if names.contains(&r.target) {
+            r.target.as_str()
+        } else if r.strict {
+            warnings.push(format!("app rule {}: {} is not in this profile, rejecting its connections", r.value, r.target));
+            "REJECT"
+        } else {
             warnings.push(format!("app rule {} skipped: {} is not in this profile", r.value, r.target));
             continue;
-        }
+        };
         let kind = if r.by_path { "PROCESS-PATH" } else { "PROCESS-NAME" };
-        lines.push(Value::String(format!("{kind},{},{}", r.process_name(), r.target)));
+        lines.push(Value::String(format!("{kind},{},{target}", r.process_name())));
     }
     prepend_rules(root, lines);
     warnings
@@ -522,11 +527,45 @@ pub fn add_user_rules(v: &mut Value, rules: &[UserRule]) -> Vec<String> {
     for r in rules {
         match r.to_rule() {
             Ok(rc) if names.contains(&rc.target) => lines.push(Value::String(rc.to_line())),
+            Ok(mut rc) if r.strict => {
+                warnings.push(format!("rule {}: {} is not in this profile, rejecting its connections", rc.payload, rc.target));
+                rc.target = "REJECT".into();
+                lines.push(Value::String(rc.to_line()));
+            }
             Ok(rc) => warnings.push(format!("rule {} skipped: {} is not in this profile", rc.payload, rc.target)),
             Err(e) => warnings.push(format!("rule skipped: {e}")),
         }
     }
     prepend_rules(root, lines);
+    warnings
+}
+
+/// Adds the GUI's chains as relay groups. Returns warnings for skipped ones.
+pub fn add_chains(v: &mut Value, chains: &[Chain]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(root) = v.as_mapping_mut() else { return warnings };
+    for c in chains {
+        let taken = target_names(root);
+        let nodes: Vec<String> = match root.get("proxies") {
+            Some(Value::Sequence(seq)) => seq.iter().filter_map(|x| x.as_mapping().and_then(|m| s(m, "name"))).collect(),
+            _ => Vec::new(),
+        };
+        if let Some(e) = c.problem(|n| nodes.iter().any(|x| x == n), |n| taken.contains(n)) {
+            warnings.push(format!("chain {} skipped: {e}", c.name));
+            continue;
+        }
+        let groups = root.entry(Value::String("proxy-groups".into())).or_insert_with(|| Value::Sequence(vec![]));
+        let Value::Sequence(groups) = groups else { continue };
+        let first = groups.iter_mut().filter_map(|g| g.as_mapping_mut()).find(|m| s(m, "type").as_deref() == Some("select"));
+        if let Some(Value::Sequence(list)) = first.and_then(|m| m.get_mut("proxies")) {
+            list.push(Value::String(c.name.clone()));
+        }
+        let mut g = Mapping::new();
+        put(&mut g, "name", c.name.clone());
+        put(&mut g, "type", "relay");
+        put(&mut g, "proxies", Value::Sequence(c.hops.iter().cloned().map(Value::String).collect()));
+        groups.push(Value::Mapping(g));
+    }
     warnings
 }
 
@@ -669,6 +708,43 @@ pub fn apply_overrides(v: &mut Value, o: &Overrides) {
 mod tests {
 
     #[test]
+    fn strict_rules_reject_when_the_target_is_gone() {
+        let mut v: Value = serde_yaml::from_str("proxies: []\nrules: [\"MATCH,DIRECT\"]\n").unwrap();
+        add_user_rules(&mut v, &[UserRule { kind: "DOMAIN".into(), value: "a.test".into(), target: "gone".into(), resolve: false, strict: true }, ur("DOMAIN", "b.test", "gone")]);
+        let w = add_app_rules(&mut v, &[AppRoute { by_path: false, value: "x.exe".into(), target: "gone".into(), strict: true }]);
+        assert!(w[0].contains("rejecting"), "{w:?}");
+        let rules: Vec<&str> = v["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+        assert_eq!(rules, ["PROCESS-NAME,x.exe,REJECT", "DOMAIN,a.test,REJECT", "MATCH,DIRECT"]);
+    }
+
+    #[test]
+    fn chains_become_relay_groups() {
+        let chains = |name: &str, hops: &[&str]| Chain { name: name.into(), hops: hops.iter().map(|h| h.to_string()).collect() };
+        let doc = r#"
+proxies:
+  - {name: a, type: ss, server: 1.1.1.1, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: b, type: ss, server: 1.1.1.2, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: auto, type: url-test, proxies: [a, b]}
+  - {name: pick, type: select, proxies: [auto, a, b]}
+rules: ["MATCH,pick"]
+"#;
+        let mut v: Value = serde_yaml::from_str(doc).unwrap();
+        let w = add_chains(&mut v, &[chains("c", &["a", "b"]), chains("one", &["a"]), chains("dup", &["a", "a"]), chains("auto", &["a", "b"]), chains("gone", &["a", "x"])]);
+        assert_eq!(w.len(), 4, "{w:?}");
+        let p = parse(&v).unwrap();
+        let relay = p.groups.iter().find(|g| g.name == "c").unwrap();
+        assert_eq!((relay.kind, relay.proxies.as_slice()), (GroupKind::Relay, ["a".to_string(), "b".to_string()].as_slice()));
+        assert!(p.groups.iter().find(|g| g.name == "pick").unwrap().proxies.contains(&"c".to_string()));
+        assert!(!p.groups.iter().find(|g| g.name == "auto").unwrap().proxies.contains(&"c".to_string()));
+
+        let mut q = crate::config::parse_any(doc).unwrap();
+        assert_eq!(q.add_chains(&[chains("c", &["a", "b"]), chains("one", &["a"])]).len(), 1);
+        assert_eq!(q.groups.last().unwrap().name, "c");
+        assert!(q.groups.iter().find(|g| g.name == "pick").unwrap().proxies.contains(&"c".to_string()));
+    }
+
+    #[test]
     fn tun_override_routes_ipv6() {
         let mut v: Value = serde_yaml::from_str("proxies: []
 rules: [MATCH,DIRECT]
@@ -721,10 +797,10 @@ rules:
     fn app_rules_prepended() {
         let mut v: Value = serde_yaml::from_str(SBM).unwrap();
         let routes = [
-            AppRoute { by_path: false, value: "telegram".into(), target: "PROXY".into() },
-            AppRoute { by_path: true, value: "D:\\Steam\\steam.exe".into(), target: "DIRECT".into() },
-            AppRoute { by_path: false, value: "x.exe".into(), target: "NOPE".into() },
-            AppRoute { by_path: false, value: "a,b".into(), target: "DIRECT".into() },
+            AppRoute { by_path: false, value: "telegram".into(), target: "PROXY".into(), strict: false },
+            AppRoute { by_path: true, value: "D:\\Steam\\steam.exe".into(), target: "DIRECT".into(), strict: false },
+            AppRoute { by_path: false, value: "x.exe".into(), target: "NOPE".into(), strict: false },
+            AppRoute { by_path: false, value: "a,b".into(), target: "DIRECT".into(), strict: false },
         ];
         let w = add_app_rules(&mut v, &routes);
         assert_eq!(w.len(), 2, "{w:?}");
@@ -736,7 +812,7 @@ rules:
     }
 
     fn ur(kind: &str, value: &str, target: &str) -> UserRule {
-        UserRule { kind: kind.into(), value: value.into(), target: target.into(), resolve: false }
+        UserRule { kind: kind.into(), value: value.into(), target: target.into(), resolve: false, strict: false }
     }
 
     #[test]
@@ -764,7 +840,7 @@ rules:
         let mut v: Value = serde_yaml::from_str(SBM).unwrap();
         let w = add_user_rules(&mut v, &[ur("DOMAIN-SUFFIX", "example.com", "PROXY"), ur("IP-CIDR", "1.1.1.1", "DIRECT"), ur("DOMAIN", "x.com", "NOPE"), ur("DOMAIN", "", "DIRECT")]);
         assert_eq!(w.len(), 2, "{w:?}");
-        add_app_rules(&mut v, &[AppRoute { by_path: false, value: "telegram".into(), target: "PROXY".into() }]);
+        add_app_rules(&mut v, &[AppRoute { by_path: false, value: "telegram".into(), target: "PROXY".into(), strict: false }]);
         let lines: Vec<String> = parse(&v).unwrap().rules.iter().map(|r| r.to_line()).collect();
         let tg = if cfg!(windows) { "PROCESS-NAME,telegram.exe,PROXY" } else { "PROCESS-NAME,telegram,PROXY" };
         assert_eq!(lines[..4], [tg, "DOMAIN-SUFFIX,example.com,PROXY", "IP-CIDR,1.1.1.1/32,DIRECT,no-resolve", "GEOSITE,cn,DIRECT"]);

@@ -97,6 +97,13 @@ struct Snapshot {
     tun_service: tunsvc::State,
     /// "windows" or "macos".
     platform: &'static str,
+    /// The core is gone and the kill switch is holding the network.
+    kill_switch_blocking: bool,
+}
+
+/// Asks the service whatever the setting says now: a block outlives the setting.
+async fn kill_switch_blocking() -> bool {
+    cfg!(windows) && tunsvc::state() == tunsvc::State::Running && tunsvc::status().await.is_ok_and(|s| s.kill_switch && !s.running)
 }
 
 #[tauri::command]
@@ -127,6 +134,7 @@ async fn get_state(app: AppHandle, st: State<'_, AppState>) -> Res<Snapshot> {
         clash_handler: links::handler("clash"),
         tun_service: tunsvc::state(),
         platform: std::env::consts::OS,
+        kill_switch_blocking: kill_switch_blocking().await,
     })
 }
 
@@ -1023,12 +1031,47 @@ async fn set_app_rules(app: AppHandle, st: State<'_, AppState>, rules: Vec<store
 #[tauri::command]
 async fn set_route_rules(app: AppHandle, st: State<'_, AppState>, mut rules: Vec<store::RouteRule>) -> Res<()> {
     for r in &mut rules {
-        let rule = prism_core::config::UserRule { kind: r.kind.clone(), value: r.value.clone(), target: r.target.clone(), resolve: r.resolve };
+        let rule = prism_core::config::UserRule { kind: r.kind.clone(), value: r.value.clone(), target: r.target.clone(), resolve: r.resolve, strict: r.strict };
         let rc = rule.to_rule().map_err(|err| format!("规则「{}」无效：{err}", r.value))?;
         r.kind = rc.kind;
         r.value = rc.payload;
     }
     st.update(|s| s.route_rules = rules)?;
+    reload_core(&app, &st).await
+}
+
+/// Turns the kill switch on or off; applies to a running core at once.
+#[tauri::command]
+async fn set_kill_switch(app: AppHandle, st: State<'_, AppState>, enable: bool) -> Res<()> {
+    if enable && (!cfg!(windows) || tunsvc::state() != tunsvc::State::Running) {
+        return Err("断网保护需要 TUN 服务，请先在设置页安装".into());
+    }
+    let was = st.settings().kill_switch;
+    st.update(|s| s.kill_switch = enable)?;
+    if st.core.running().await.is_some() {
+        if let Err(err) = start(&app, &st).await {
+            st.update(|s| s.kill_switch = was)?;
+            return Err(err);
+        }
+    } else if !enable && kill_switch_blocking().await {
+        tunsvc::stop().await.map_err(e)?;
+    }
+    Ok(())
+}
+
+/// Gives the network back after a crash, without restarting the core.
+#[tauri::command]
+async fn release_kill_switch(app: AppHandle, st: State<'_, AppState>) -> Res<()> {
+    tunsvc::stop().await.map_err(e)?;
+    st.core.push_log(&app, "[prism] 已解除断网保护".into());
+    let _ = app.emit("core-changed", ());
+    Ok(())
+}
+
+/// Saves the chains and reloads a running core.
+#[tauri::command]
+async fn set_chains(app: AppHandle, st: State<'_, AppState>, chains: Vec<store::ChainRule>) -> Res<()> {
+    st.update(|s| s.chains = chains)?;
     reload_core(&app, &st).await
 }
 
@@ -1518,6 +1561,9 @@ pub fn run() {
             app_traffic,
             set_app_rules,
             set_route_rules,
+            set_chains,
+            set_kill_switch,
+            release_kill_switch,
             set_profile_interval,
             set_autostart,
             set_clash_links,

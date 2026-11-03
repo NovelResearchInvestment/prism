@@ -38,6 +38,8 @@ export function installDevMock() {
       { id: "2", enabled: true, by_path: true, value: "D:\\Games\\Steam\\steam.exe", target: "DIRECT" },
       { id: "3", enabled: false, by_path: false, value: "updater.exe", target: "REJECT" },
     ],
+    kill_switch: false,
+    chains: [{ id: "c1", enabled: true, name: "日本落地", hops: ["香港", "东京"] }],
     route_rules: [
       { id: "r1", enabled: true, kind: "DOMAIN-SUFFIX", value: "openai.com", target: "节点选择", resolve: false },
       { id: "r2", enabled: true, kind: "IP-CIDR", value: "192.168.50.0/24", target: "DIRECT", resolve: false },
@@ -48,7 +50,7 @@ export function installDevMock() {
     { id: "demo", name: "sbm 订阅", url: "https://sub.example.com/api/sub?token=demo", format: "clash", nodes: 2, updated_at: Date.now() / 1000 - 7200, usage: null, interval: 1440 },
     { id: "local", name: "本地配置", url: null, format: "uri", nodes: 3, updated_at: Date.now() / 1000 - 86400 * 3, usage: null, interval: 1440 },
   ];
-  const sys = { autostart: false, clash_links: false, tun_service: "missing" as "missing" | "stopped" | "running" };
+  const sys = { autostart: false, clash_links: false, tun_service: "missing" as "missing" | "stopped" | "running", kill_switch_blocking: false };
   // `?import` shows the confirmation dialog for a clash:// link once.
   let pendingLinks = location.search.includes("import")
     ? [
@@ -243,6 +245,13 @@ export function installDevMock() {
         total: 128,
         warnings: [],
       };
+    },
+    set_kill_switch: (a) => {
+      settings.kill_switch = !!a.enable;
+    },
+    release_kill_switch: () => {},
+    set_chains: (a) => {
+      settings.chains = a.chains as typeof settings.chains;
     },
     set_route_rules: (a) => {
       settings.route_rules = a.rules as typeof settings.route_rules;

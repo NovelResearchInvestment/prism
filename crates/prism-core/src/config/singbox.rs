@@ -667,6 +667,10 @@ pub fn add_app_rules(v: &mut Value, routes: &[AppRoute]) -> Vec<String> {
                 rule["outbound"] = json!(tag);
             }
             t if tags.iter().any(|(tag, _)| tag == t) => rule["outbound"] = json!(t),
+            t if r.strict => {
+                warnings.push(format!("app rule {}: {t} is not in this profile, rejecting its connections", r.value));
+                rule["action"] = json!("reject");
+            }
             t => {
                 warnings.push(format!("app rule {} skipped: {t} is not in this profile", r.value));
                 continue;
@@ -736,6 +740,10 @@ pub fn add_user_rules(v: &mut Value, user: &[UserRule]) -> Vec<String> {
                 rule["outbound"] = json!(direct.clone().unwrap_or_else(|| "DIRECT".into()));
             }
             t if tags.iter().any(|(tag, _)| tag == t) || endpoints.iter().any(|e| e == t) => rule["outbound"] = json!(t),
+            t if r.strict => {
+                warnings.push(format!("rule {}: {t} is not in this profile, rejecting its connections", rc.payload));
+                rule["action"] = json!("reject");
+            }
             t => {
                 warnings.push(format!("rule {} skipped: {t} is not in this profile", rc.payload));
                 continue;
@@ -1020,6 +1028,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn strict_rules_reject_when_the_target_is_gone() {
+        let mut sb = json!({ "outbounds": [], "route": { "rules": [] } });
+        add_user_rules(&mut sb, &[UserRule { kind: "DOMAIN".into(), value: "a.test".into(), target: "gone".into(), resolve: false, strict: true }]);
+        add_app_rules(&mut sb, &[AppRoute { by_path: false, value: "x.exe".into(), target: "gone".into(), strict: true }]);
+        let rules = &sb["route"]["rules"];
+        assert_eq!(rules[0], json!({ "process_name": ["x.exe"], "action": "reject" }));
+        assert_eq!(rules[1], json!({ "domain": ["a.test"], "action": "reject" }));
+    }
+
+    #[test]
     fn overrides_always_find_processes() {
         let mut sb = json!({ "outbounds": [] });
         apply_overrides(&mut sb, &overrides());
@@ -1149,10 +1167,10 @@ rules:
         let p = parse_any("anytls://pw@jp.example.com:443/?sni=jp.example.com#jp").unwrap();
         let mut sb = emit(&p, &overrides());
         let routes = [
-            AppRoute { by_path: false, value: "chrome".into(), target: "jp".into() },
-            AppRoute { by_path: true, value: "C:\\Games\\x.exe".into(), target: "DIRECT".into() },
-            AppRoute { by_path: false, value: "ads.exe".into(), target: "REJECT".into() },
-            AppRoute { by_path: false, value: "a.exe".into(), target: "missing".into() },
+            AppRoute { by_path: false, value: "chrome".into(), target: "jp".into(), strict: false },
+            AppRoute { by_path: true, value: "C:\\Games\\x.exe".into(), target: "DIRECT".into(), strict: false },
+            AppRoute { by_path: false, value: "ads.exe".into(), target: "REJECT".into(), strict: false },
+            AppRoute { by_path: false, value: "a.exe".into(), target: "missing".into(), strict: false },
         ];
         let w = add_app_rules(&mut sb, &routes);
         assert_eq!(w.len(), 1, "{w:?}");
@@ -1168,13 +1186,13 @@ rules:
     fn user_rules_after_mode_rules_with_rule_sets() {
         let p = parse_any("anytls://pw@jp.example.com:443/?sni=jp.example.com#jp").unwrap();
         let mut sb = emit(&p, &overrides());
-        let ur = |kind: &str, value: &str, target: &str| UserRule { kind: kind.into(), value: value.into(), target: target.into(), resolve: false };
+        let ur = |kind: &str, value: &str, target: &str| UserRule { kind: kind.into(), value: value.into(), target: target.into(), resolve: false, strict: false };
         let w = add_user_rules(
             &mut sb,
             &[ur("DOMAIN-SUFFIX", "example.com", "jp"), ur("IP-CIDR", "1.1.1.1", "DIRECT"), ur("GEOSITE", "netflix", "jp"), ur("GEOIP", "telegram", "REJECT"), ur("DOMAIN", "x.com", "missing")],
         );
         assert_eq!(w.len(), 1, "{w:?}");
-        add_app_rules(&mut sb, &[AppRoute { by_path: false, value: "chrome".into(), target: "jp".into() }]);
+        add_app_rules(&mut sb, &[AppRoute { by_path: false, value: "chrome".into(), target: "jp".into(), strict: false }]);
         let rules = sb["route"]["rules"].as_array().unwrap();
         assert_eq!(rules[2]["clash_mode"], "Global");
         assert_eq!(rules[3], json!({ "process_name": [if cfg!(windows) { "chrome.exe" } else { "chrome" }], "outbound": "jp" }));

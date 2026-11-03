@@ -35,6 +35,22 @@ export function TargetSelect({ value, outs, onChange }: { value: string; outs: O
   );
 }
 
+/** 出口异常时拒绝: only for rules that name an exit that can go away. */
+export function StrictOption({ target, outs, value, onChange }: { target: string; outs: Outbounds | null; value: boolean; onChange: (v: boolean) => void }) {
+  if (target === "DIRECT" || target === "REJECT") return null;
+  return (
+    <label className="row small" style={{ gap: 8, cursor: "pointer", alignItems: "flex-start" }}>
+      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
+      <span>
+        {t("出口异常时拒绝：出口连不上或已从订阅中消失时，连接直接失败，不直连，也不改走其他规则。")}
+        {value && outs?.groups.includes(target) && (
+          <span style={{ color: "var(--bad)" }}> {t("出口是代理组时，组内其他节点或 DIRECT 仍可能接管；要完全锁定请选具体节点。")}</span>
+        )}
+      </span>
+    </label>
+  );
+}
+
 export function useOutbounds() {
   const { snap } = useApp();
   const [outs, setOuts] = useState<Outbounds | null>(null);
@@ -64,6 +80,7 @@ export function AppRuleDialog({
   const [byPath, setByPath] = useState(!!initial.by_path);
   const [value, setValue] = useState(initial.value ?? "");
   const [target, setTarget] = useState(initial.target ?? "");
+  const [strict, setStrict] = useState(!!initial.strict);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -97,6 +114,7 @@ export function AppRuleDialog({
       by_path: byPath,
       value: value.trim(),
       target: target || "DIRECT",
+      strict: strict && target !== "DIRECT" && target !== "REJECT",
     });
     setSaving(false);
     if (ok) onClose();
@@ -153,6 +171,7 @@ export function AppRuleDialog({
           <label>{t("出口")}</label>
           <TargetSelect value={target} outs={outs} onChange={setTarget} />
         </div>
+        <StrictOption target={target} outs={outs} value={strict} onChange={setStrict} />
         <div className="small muted">
           {byPath ? t("只匹配这个路径的程序。") : t("所有同名程序都会匹配（不区分大小写）。")} {t("规则模式下生效，优先于订阅中的规则。")}
           {value.includes(",") && <span style={{ color: "var(--bad)" }}> {t("不能包含逗号。")}</span>}
@@ -217,6 +236,7 @@ export default function Apps() {
             {r.by_path && <span className="muted small mono">{r.value}</span>}
           </div>
           <span className="tag">{r.by_path ? t("按路径") : t("按程序名")}</span>
+          {r.strict && <span className="tag accent">{t("异常时拒绝")}</span>}
           <span className="muted">→</span>
           <div style={{ width: 200 }}>
             <TargetSelect value={r.target} outs={outs} onChange={(t) => save(rules.map((x) => (x.id === r.id ? { ...x, target: t } : x)))} />

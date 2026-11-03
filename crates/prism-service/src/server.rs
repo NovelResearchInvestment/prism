@@ -36,6 +36,8 @@ struct State {
     layout: Layout,
     owner: Owner,
     core: tokio::sync::Mutex<Option<Running>>,
+    #[cfg(windows)]
+    kill_switch: Mutex<Option<crate::killswitch::KillSwitch>>,
     logs: Arc<Mutex<Logs>>,
     /// path -> (len, mtime, sha256)
     hashes: Mutex<HashMap<PathBuf, (u64, SystemTime, String)>>,
@@ -52,6 +54,43 @@ fn push_log(logs: &Mutex<Logs>, line: String) {
 }
 
 impl State {
+    /// Only the cores this service runs may connect outside the TUN.
+    #[cfg(windows)]
+    fn set_kill_switch(&self, on: bool) -> Result<()> {
+        let mut ks = self.kill_switch.lock().unwrap();
+        match (on, ks.is_some()) {
+            (true, false) => {
+                let allowed: Vec<PathBuf> = CORES.iter().map(|(_, file)| self.layout.cores_dir().join(file)).filter(|p| p.exists()).collect();
+                *ks = Some(crate::killswitch::KillSwitch::enable(&allowed).context("启用断网保护失败")?);
+                push_log(&self.logs, "[service] 断网保护已启用".into());
+            }
+            (false, true) => {
+                *ks = None;
+                push_log(&self.logs, "[service] 断网保护已解除".into());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn set_kill_switch(&self, on: bool) -> Result<()> {
+        if on {
+            bail!("断网保护目前只支持 Windows");
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn kill_switch_on(&self) -> bool {
+        self.kill_switch.lock().unwrap().is_some()
+    }
+
+    #[cfg(not(windows))]
+    fn kill_switch_on(&self) -> bool {
+        false
+    }
+
     fn hash(&self, p: &Path) -> Option<String> {
         let meta = p.metadata().ok()?;
         let key = (meta.len(), meta.modified().ok()?);
@@ -78,6 +117,7 @@ impl State {
             pid: core.as_ref().and_then(|r| r.child.id()),
             version: env!("CARGO_PKG_VERSION").into(),
             wintun: self.hash(&self.layout.wintun()),
+            kill_switch: self.kill_switch_on(),
             ..Default::default()
         };
         drop(core);
@@ -105,14 +145,22 @@ impl State {
         st
     }
 
-    async fn stop(&self) {
+    async fn stop_core(&self) {
         if let Some(mut r) = self.core.lock().await.take() {
             let _ = r.child.kill().await;
             push_log(&self.logs, format!("[service] {} 已停止", r.kind));
         }
     }
 
-    async fn start(&self, kind: &str, config: &str, files: &BTreeMap<String, String>) -> Result<()> {
+    /// Stops on request: the user wants the network back, so the block goes too.
+    async fn stop(&self) {
+        self.stop_core().await;
+        if let Err(e) = self.set_kill_switch(false) {
+            log(&self.layout, &format!("{e:#}"));
+        }
+    }
+
+    async fn start(&self, kind: &str, config: &str, files: &BTreeMap<String, String>, kill_switch: bool) -> Result<()> {
         let file = core_file(kind).with_context(|| format!("unknown core {kind}"))?;
         let bin = self.layout.cores_dir().join(file);
         if !bin.exists() {
@@ -125,7 +173,11 @@ impl State {
             }
         }
         let config = sanitize_config(kind, config)?;
-        self.stop().await;
+        // Before the old core goes, so a restart has no unprotected moment.
+        if kill_switch {
+            self.set_kill_switch(true)?;
+        }
+        self.stop_core().await;
         let run = self.layout.run_dir();
         std::fs::create_dir_all(run.join("rule-set"))?;
         for (name, data) in files {
@@ -166,6 +218,9 @@ impl State {
             });
         }
         *self.core.lock().await = Some(Running { kind: kind.into(), child });
+        if !kill_switch {
+            self.set_kill_switch(false)?;
+        }
         Ok(())
     }
 
@@ -197,7 +252,15 @@ fn create_pipe(name: &str, sid: &str, first: bool) -> Result<NamedPipeServer> {
 
 fn load_state(layout: Layout) -> Result<Arc<State>> {
     let owner: Owner = serde_json::from_slice(&std::fs::read(layout.owner_file()).context("service.json missing, reinstall the service")?)?;
-    Ok(Arc::new(State { layout, owner, core: Default::default(), logs: Default::default(), hashes: Default::default() }))
+    Ok(Arc::new(State {
+        layout,
+        owner,
+        core: Default::default(),
+        #[cfg(windows)]
+        kill_switch: Default::default(),
+        logs: Default::default(),
+        hashes: Default::default(),
+    }))
 }
 
 /// Serves requests until `stop` turns true, then stops the core.
@@ -309,7 +372,7 @@ async fn dispatch(req: Request, st: &State) -> Response {
             Response { ok: true, ..Default::default() }
         }
         Request::Logs { since } => Response { ok: true, lines: st.logs_since(since), ..Default::default() },
-        Request::Start { core, config, files } => match st.start(&core, &config, &files).await {
+        Request::Start { core, config, files, kill_switch } => match st.start(&core, &config, &files, kill_switch).await {
             Ok(()) => Response { ok: true, status: Some(st.status().await), ..Default::default() },
             Err(e) => Response::err(e),
         },

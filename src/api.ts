@@ -34,6 +34,8 @@ export interface Settings {
   selections: Record<string, Record<string, string>>;
   app_rules: AppRule[];
   route_rules: RouteRule[];
+  chains: ChainRule[];
+  kill_switch: boolean;
   tray_speed: boolean;
 }
 
@@ -63,6 +65,16 @@ export interface AppRule {
   by_path: boolean;
   value: string;
   target: string;
+  /** Reject the connections when the target is gone from the profile. */
+  strict: boolean;
+}
+
+/** 链式代理: nodes traffic goes through in order. */
+export interface ChainRule {
+  id: string;
+  enabled: boolean;
+  name: string;
+  hops: string[];
 }
 
 export type RouteKind = "DOMAIN-SUFFIX" | "DOMAIN" | "DOMAIN-KEYWORD" | "IP-CIDR" | "GEOSITE" | "GEOIP";
@@ -76,6 +88,8 @@ export interface RouteRule {
   target: string;
   /** IP rules: also match domains resolving into the range. */
   resolve: boolean;
+  /** Reject the connections when the target is gone from the profile. */
+  strict: boolean;
 }
 
 export interface ProcessInfo {
@@ -107,6 +121,8 @@ export interface Snapshot {
   clash_handler: string | null;
   /** TUN service (runs TUN cores without admin rights for Prism). */
   tun_service: "missing" | "stopped" | "running";
+  /** The core is gone and the kill switch is holding the network. */
+  kill_switch_blocking: boolean;
   platform: "windows" | "macos" | string;
 }
 
@@ -277,6 +293,9 @@ export const api = {
   setAppRules: (rules: AppRule[]) => invoke<void>("set_app_rules", { rules }),
   setMergeProfiles: (ids: string[]) => invoke<void>("set_merge_profiles", { ids }),
   setRouteRules: (rules: RouteRule[]) => invoke<void>("set_route_rules", { rules }),
+  setChains: (chains: ChainRule[]) => invoke<void>("set_chains", { chains }),
+  setKillSwitch: (enable: boolean) => invoke<void>("set_kill_switch", { enable }),
+  releaseKillSwitch: () => invoke<void>("release_kill_switch"),
   geoLocate: (hosts: string[]) => invoke<Record<string, string | null>>("geo_locate", { hosts }),
   nodeServers: () => invoke<Record<string, string>>("node_servers"),
   speedTest: (names: string[], url: string, seconds: number) => invoke<SpeedProgress[]>("speed_test", { names, url, seconds }),

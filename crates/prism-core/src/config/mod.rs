@@ -370,6 +370,9 @@ pub struct AppRoute {
     pub value: String,
     /// Proxy / group name, DIRECT or REJECT.
     pub target: String,
+    /// A target missing from the profile rejects the connections instead of
+    /// leaving them to the rules below.
+    pub strict: bool,
 }
 
 impl AppRoute {
@@ -408,6 +411,40 @@ pub struct UserRule {
     /// IP rules: resolve domain destinations to match them too (slower).
     #[serde(default)]
     pub resolve: bool,
+    /// A target missing from the profile rejects the connections instead of
+    /// leaving them to the rules below.
+    #[serde(default)]
+    pub strict: bool,
+}
+
+/// A chain of nodes set up in the GUI: traffic goes through `hops` in order.
+/// Becomes a relay group, also offered in the profile's first select group.
+#[derive(Clone, Debug)]
+pub struct Chain {
+    pub name: String,
+    pub hops: Vec<String>,
+}
+
+impl Chain {
+    /// What keeps this chain from being added to a profile.
+    fn problem(&self, is_node: impl Fn(&str) -> bool, taken: impl Fn(&str) -> bool) -> Option<String> {
+        if self.name.trim().is_empty() || self.name.contains(',') {
+            return Some("invalid name".into());
+        }
+        if taken(&self.name) {
+            return Some("its name is already used by a node or group".into());
+        }
+        if self.hops.len() < 2 {
+            return Some("it needs at least two nodes".into());
+        }
+        if let Some(h) = self.hops.iter().find(|h| !is_node(h)) {
+            return Some(format!("{h} is not a node of this profile"));
+        }
+        if self.hops.iter().enumerate().any(|(i, h)| self.hops[..i].contains(h)) {
+            return Some("a node appears twice".into());
+        }
+        None
+    }
 }
 
 pub const USER_RULE_KINDS: [&str; 6] = ["DOMAIN-SUFFIX", "DOMAIN", "DOMAIN-KEYWORD", "IP-CIDR", "GEOSITE", "GEOIP"];
@@ -549,6 +586,28 @@ pub struct Profile {
     pub rule_providers: Vec<RuleProviderConfig>,
     /// Things that were skipped while parsing (unknown proxy types, ...).
     pub warnings: Vec<String>,
+}
+
+impl Profile {
+    /// Adds the GUI's chains as relay groups. Returns warnings for skipped ones.
+    pub fn add_chains(&mut self, chains: &[Chain]) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for c in chains {
+            let problem = c.problem(
+                |n| self.proxies.iter().any(|p| p.name == n),
+                |n| ["DIRECT", "REJECT", "GLOBAL"].contains(&n) || self.proxies.iter().any(|p| p.name == n) || self.groups.iter().any(|g| g.name == n),
+            );
+            if let Some(e) = problem {
+                warnings.push(format!("chain {} skipped: {e}", c.name));
+                continue;
+            }
+            if let Some(g) = self.groups.iter_mut().find(|g| g.kind == GroupKind::Select) {
+                g.proxies.push(c.name.clone());
+            }
+            self.groups.push(GroupConfig::new(&c.name, GroupKind::Relay, c.hops.clone()));
+        }
+        warnings
+    }
 }
 
 /// Built-in outbound names that are always available.

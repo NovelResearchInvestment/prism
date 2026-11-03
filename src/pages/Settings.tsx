@@ -335,6 +335,27 @@ function TunServiceCard() {
           ? t("macOS 上 TUN 需要这个服务：开启 TUN 时内核由系统后台服务（LaunchDaemon，以 root 运行）运行，Prism 本身不需要管理员权限。安装、更新和卸载各需要输入一次 Mac 的登录密码。服务只运行安装时复制到受保护目录的内核，只接受当前用户的 Prism 的请求。Prism 或内核更新后会提示更新服务。")
           : t("安装后，开启 TUN 时内核由系统服务（Prism TUN Service）运行，Prism 本身不需要管理员权限，开机自启也能直接使用 TUN。安装、更新和卸载各需要一次管理员授权。服务只运行安装时复制到受保护目录的内核，只接受当前 Windows 用户的 Prism 的请求。Prism 或内核更新后会提示更新服务。")}
       </div>
+      {!mac && (
+        <div style={{ marginTop: 14 }}>
+          <div className="row wrap">
+            <button
+              className={`switch ${snap.settings.kill_switch ? "on" : ""}`}
+              disabled={busy || (st !== "running" && !snap.settings.kill_switch)}
+              onClick={() => {
+                const on = !snap.settings.kill_switch;
+                act(() => api.setKillSwitch(on), on ? t("已开启断网保护") : t("已关闭断网保护"));
+              }}
+            />
+            <b>{t("断网保护")}</b>
+            {st !== "running" && <span className="tag">{t("需要先安装 TUN 服务。")}</span>}
+            {st === "running" && snap.settings.kill_switch && !snap.settings.tun && <span className="tag">{t("需要先开启 TUN 模式才会生效。")}</span>}
+          </div>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            {t("开启 TUN 时，只允许流量经 TUN、本机和局域网通过。内核崩溃后继续拦截，流量不会变成直连。")}{" "}
+            {t("内核崩溃后，直到重启内核或解除前都上不了网。不走 TUN 的远程控制、其他 VPN 也会被拦截。退出 Prism、停止内核或重启电脑都会解除。")}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

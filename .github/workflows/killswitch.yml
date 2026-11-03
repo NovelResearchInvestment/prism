@@ -1,0 +1,40 @@
+name: Kill switch
+
+# Real firewall filters and TUN adapters on a throwaway machine. Runs on request:
+# each step takes the runner's network away for a few seconds.
+on:
+  workflow_dispatch:
+  push:
+    branches: [test/kill-switch]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build -p prism-core -p prism-service --tests
+      - name: Fetch cores and wintun
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force cores | Out-Null
+          $h = @{ Authorization = "Bearer ${{ github.token }}" }
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile cores/wintun.zip
+          Expand-Archive cores/wintun.zip cores/wintun
+          $a = (Invoke-RestMethod -Headers $h https://api.github.com/repos/MetaCubeX/mihomo/releases/latest).assets | Where-Object { $_.name -match '^mihomo-windows-amd64-v[0-9.]+\.zip$' } | Select-Object -First 1
+          Invoke-WebRequest $a.browser_download_url -OutFile cores/mihomo.zip
+          Expand-Archive cores/mihomo.zip cores/mihomo
+          $s = (Invoke-RestMethod -Headers $h https://api.github.com/repos/SagerNet/sing-box/releases/latest).assets | Where-Object { $_.name -match '^sing-box-[0-9.]+-windows-amd64\.zip$' } | Select-Object -First 1
+          Invoke-WebRequest $s.browser_download_url -OutFile cores/singbox.zip
+          Expand-Archive cores/singbox.zip cores/singbox
+      - name: Test
+        shell: pwsh
+        run: |
+          $mihomo = (Get-ChildItem cores/mihomo -Recurse -Filter *.exe | Select-Object -First 1).FullName
+          $singbox = (Get-ChildItem cores/singbox -Recurse -Filter sing-box.exe | Select-Object -First 1).FullName
+          $prism = (Resolve-Path target/debug/prism-core.exe).Path
+          $env:PRISM_KILLSWITCH_TEST = "1"
+          $env:PRISM_KILLSWITCH_WINTUN = (Resolve-Path cores/wintun/wintun/bin/amd64/wintun.dll).Path
+          $env:PRISM_KILLSWITCH_CORES = "prism=$prism;mihomo=$mihomo;singbox=$singbox"
+          cargo test -p prism-service --test killswitch -- --test-threads=1 --nocapture

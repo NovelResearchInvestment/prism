@@ -30,7 +30,8 @@ pub struct CoreManager {
 
 /// TUN without administrator rights goes through the TUN service.
 pub fn use_service(s: &Settings) -> bool {
-    s.tun && !crate::elevate::is_elevated() && crate::tunsvc::state() == crate::tunsvc::State::Running
+    // The kill switch lives in the service, also when Prism could run TUN itself.
+    s.tun && (!crate::elevate::is_elevated() || s.kill_switch) && crate::tunsvc::state() == crate::tunsvc::State::Running
 }
 
 pub fn core_binary(store: &Store, s: &Settings, kind: CoreKind) -> PathBuf {
@@ -92,16 +93,24 @@ fn active_profile(store: &Store, s: &Settings) -> Result<String> {
 
 /// sing-box config for the active profile, before rule-sets are localized.
 fn singbox_config(store: &Store, s: &Settings) -> Result<(Value, Vec<String>)> {
-    let (raw, warnings) = active_profile_full(store, s)?;
+    let (raw, mut warnings) = active_profile_full(store, s)?;
     let o = overrides(s);
     let mut doc: Value = match config::detect(&raw) {
-        Format::SingBox => serde_json::from_str(&raw)?,
-        _ => singbox::emit(&config::parse_any(&raw)?, &o),
+        Format::SingBox => {
+            if !chains(s).is_empty() {
+                warnings.push("链式代理: 当前订阅是 sing-box 原始配置，链式代理已跳过".to_string());
+            }
+            serde_json::from_str(&raw)?
+        }
+        _ => {
+            let mut p = config::parse_any(&raw)?;
+            warnings.extend(chain_warnings(p.add_chains(&chains(s))));
+            singbox::emit(&p, &o)
+        }
     };
     singbox::apply_overrides(&mut doc, &o);
     // Here rather than with the app rules: the rule-sets these need must
     // be among the ones the app downloads.
-    let mut warnings = warnings;
     warnings.extend(route_warnings(singbox::add_user_rules(&mut doc, &user_rules(s))));
     Ok((doc, warnings))
 }
@@ -129,7 +138,7 @@ fn app_routes(s: &Settings) -> Vec<config::AppRoute> {
     s.app_rules
         .iter()
         .filter(|r| r.enabled)
-        .map(|r| config::AppRoute { by_path: r.by_path, value: r.value.clone(), target: r.target.clone() })
+        .map(|r| config::AppRoute { by_path: r.by_path, value: r.value.clone(), target: r.target.clone(), strict: r.strict })
         .collect()
 }
 
@@ -137,8 +146,16 @@ fn user_rules(s: &Settings) -> Vec<config::UserRule> {
     s.route_rules
         .iter()
         .filter(|r| r.enabled)
-        .map(|r| config::UserRule { kind: r.kind.clone(), value: r.value.clone(), target: r.target.clone(), resolve: r.resolve })
+        .map(|r| config::UserRule { kind: r.kind.clone(), value: r.value.clone(), target: r.target.clone(), resolve: r.resolve, strict: r.strict })
         .collect()
+}
+
+fn chains(s: &Settings) -> Vec<config::Chain> {
+    s.chains.iter().filter(|c| c.enabled).map(|c| config::Chain { name: c.name.clone(), hops: c.hops.clone() }).collect()
+}
+
+fn chain_warnings(w: Vec<String>) -> Vec<String> {
+    w.into_iter().map(|w| format!("链式代理: {w}")).collect()
 }
 
 fn route_warnings(w: Vec<String>) -> Vec<String> {
@@ -151,7 +168,8 @@ fn app_warnings(w: Vec<String>) -> Vec<String> {
 
 /// Groups and nodes of the active profile, as exits for app rules.
 pub fn profile_outbounds(store: &Store, s: &Settings) -> Result<(Vec<String>, Vec<String>)> {
-    let p = config::parse_any(&active_profile(store, s)?)?;
+    let mut p = config::parse_any(&active_profile(store, s)?)?;
+    p.add_chains(&chains(s));
     Ok((p.groups.into_iter().map(|g| g.name).collect(), p.proxies.into_iter().map(|x| x.name).collect()))
 }
 
@@ -164,6 +182,7 @@ fn clash_doc(store: &Store, s: &Settings) -> Result<(serde_yaml::Value, Vec<Stri
         _ => clash::emit(&config::parse_any(&raw)?),
     };
     clash::apply_overrides(&mut doc, &overrides(s));
+    warnings.extend(chain_warnings(clash::add_chains(&mut doc, &chains(s))));
     warnings.extend(route_warnings(clash::add_user_rules(&mut doc, &user_rules(s))));
     warnings.extend(app_warnings(clash::add_app_rules(&mut doc, &app_routes(s))));
     Ok((doc, warnings))
@@ -229,7 +248,13 @@ impl CoreManager {
     }
 
     pub async fn start(&self, app: &AppHandle, store: &Store, s: &Settings) -> Result<()> {
-        self.stop().await;
+        // The service replaces its core itself: stopping it first would lift
+        // the kill switch for a moment.
+        if use_service(s) {
+            self.stop_local().await;
+        } else {
+            self.stop().await;
+        }
         let bin = core_binary(store, s, s.core);
         if !bin.exists() {
             bail!(match s.core {
@@ -322,13 +347,22 @@ impl CoreManager {
         Ok(())
     }
 
-    pub async fn stop(&self) {
+    async fn stop_local(&self) {
         if let Some((_, mut child)) = self.child.lock().await.take() {
             let _ = child.kill().await;
         }
         #[cfg(target_os = "macos")]
         crate::macdns::restore();
-        if self.service.lock().await.take().is_some() {
+    }
+
+    pub async fn stop(&self) {
+        self.stop_local().await;
+        let ours = self.service.lock().await.take().is_some();
+        // Also what a crashed Prism left in the service: a core or a block.
+        let left_over = !ours
+            && crate::tunsvc::state() == crate::tunsvc::State::Running
+            && crate::tunsvc::status().await.is_ok_and(|st| st.running || st.kill_switch);
+        if ours || left_over {
             let _ = crate::tunsvc::stop().await;
         }
         if let Some(task) = self.service_logs.lock().unwrap().take() {

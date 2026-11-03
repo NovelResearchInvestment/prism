@@ -20,6 +20,9 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+pub mod killswitch;
+
 pub const SERVICE_NAME: &str = "PrismService";
 #[cfg(windows)]
 pub const PIPE: &str = r"\\.\pipe\prism-service";
@@ -144,7 +147,15 @@ pub enum Request {
     Status,
     /// Starts (or restarts) the core. `files`: data files for its working
     /// folder, name -> base64 contents (see [`allowed_file`]).
-    Start { core: String, config: String, files: BTreeMap<String, String> },
+    /// `kill_switch`: block traffic outside the TUN, also after the core dies.
+    Start {
+        core: String,
+        config: String,
+        files: BTreeMap<String, String>,
+        #[serde(default)]
+        kill_switch: bool,
+    },
+    /// Stops the core and lifts the kill switch.
     Stop,
     /// Core output lines after sequence number `since`.
     Logs { since: u64 },
@@ -162,6 +173,9 @@ pub struct Status {
     pub wintun: Option<String>,
     /// Data files in the working folder -> SHA-256.
     pub files: BTreeMap<String, String>,
+    /// The kill switch is on (blocking everything if `running` is false).
+    #[serde(default)]
+    pub kill_switch: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -129,7 +129,13 @@ pub async fn start(store: &Store, s: &Settings, config: String) -> Result<()> {
             files.insert(name, base64::engine::general_purpose::STANDARD.encode(bytes));
         }
     }
-    call(&Request::Start { core: kind_name(s.core).into(), config, files }).await?;
+    let kill_switch = s.kill_switch && s.tun;
+    let r = call(&Request::Start { core: kind_name(s.core).into(), config, files, kill_switch }).await?;
+    // A service from before the kill switch ignores the request.
+    if kill_switch && !r.status.is_some_and(|st| st.kill_switch) {
+        let _ = stop().await;
+        bail!(NEED_UPDATE);
+    }
     Ok(())
 }
 

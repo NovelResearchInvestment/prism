@@ -55,6 +55,11 @@ pub struct Settings {
     pub app_rules: Vec<AppRule>,
     /// Domain / IP routing (域名 / IP 分流), after the app rules.
     pub route_rules: Vec<RouteRule>,
+    /// Chains of nodes (链式代理), added to the profile as relay groups.
+    pub chains: Vec<ChainRule>,
+    /// Windows, TUN through the service: block traffic outside the TUN, also
+    /// after the core dies.
+    pub kill_switch: bool,
     /// Live speed in the menu bar (macOS) / drawn as the tray icon (Windows).
     pub tray_speed: bool,
 }
@@ -88,6 +93,8 @@ impl Default for Settings {
             selections: HashMap::new(),
             app_rules: Vec::new(),
             route_rules: Vec::new(),
+            chains: Vec::new(),
+            kill_switch: false,
             tray_speed: cfg!(target_os = "macos"),
         }
     }
@@ -116,6 +123,8 @@ pub struct AppRule {
     pub value: String,
     /// Proxy / group name, DIRECT or REJECT.
     pub target: String,
+    /// Reject the connections when the target is gone from the profile.
+    pub strict: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -130,6 +139,18 @@ pub struct RouteRule {
     pub target: String,
     /// IP rules: also match domains that resolve into the range.
     pub resolve: bool,
+    /// Reject the connections when the target is gone from the profile.
+    pub strict: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChainRule {
+    pub id: String,
+    pub enabled: bool,
+    pub name: String,
+    /// Nodes in the order traffic goes through them.
+    pub hops: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -15,15 +15,15 @@ fn user_rules() -> Vec<UserRule> {
         ("GEOIP", "telegram", "PROXY"),
     ]
     .into_iter()
-    .map(|(k, v, t)| UserRule { kind: k.into(), value: v.into(), target: t.into(), resolve: false })
+    .map(|(k, v, t)| UserRule { kind: k.into(), value: v.into(), target: t.into(), resolve: false, strict: false })
     .collect()
 }
 
 fn app_routes() -> Vec<AppRoute> {
     vec![
-        AppRoute { by_path: false, value: "chrome".into(), target: "PROXY".into() },
-        AppRoute { by_path: true, value: "C:\\Program Files\\Steam\\steam.exe".into(), target: "DIRECT".into() },
-        AppRoute { by_path: false, value: "ads.exe".into(), target: "REJECT".into() },
+        AppRoute { by_path: false, value: "chrome".into(), target: "PROXY".into(), strict: false },
+        AppRoute { by_path: true, value: "C:\\Program Files\\Steam\\steam.exe".into(), target: "DIRECT".into(), strict: false },
+        AppRoute { by_path: false, value: "ads.exe".into(), target: "REJECT".into(), strict: false },
     ]
 }
 
@@ -143,4 +143,54 @@ fn generated_singbox_config_passes_check() {
             serde_json::to_string_pretty(&cfg).unwrap()
         );
     }
+}
+
+/// Opt-in: writes the configs the GUI generates for a chain (and a strict rule
+/// whose target is gone), one per core, for the interop script.
+///   PRISM_CHAIN_OUT=dir cargo test -p prism-core --test singbox_check chain_configs
+#[test]
+fn chain_configs() {
+    let Ok(dir) = std::env::var("PRISM_CHAIN_OUT") else {
+        eprintln!("PRISM_CHAIN_OUT not set, skipping");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let raw = r#"
+proxies:
+  - {name: hop, type: socks5, server: 127.0.0.1, port: 18101}
+  - {name: exit, type: ss, server: 127.0.0.1, port: 18102, cipher: aes-128-gcm, password: pw}
+proxy-groups:
+  - {name: pick, type: select, proxies: [hop, exit]}
+rules:
+  - MATCH,DIRECT
+"#;
+    let chain = [config::Chain { name: "my chain".into(), hops: vec!["hop".into(), "exit".into()] }];
+    let rules = [
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.2".into(), target: "my chain".into(), resolve: false, strict: true },
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.3".into(), target: "gone".into(), resolve: false, strict: true },
+    ];
+    let o = Overrides {
+        mixed_port: 18103,
+        controller: "127.0.0.1:18104".into(),
+        secret: "s".into(),
+        mode: Mode::Rule,
+        allow_lan: false,
+        log_level: "info".into(),
+        tun: false,
+        unified_delay: true,
+    };
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    clash::apply_overrides(&mut doc, &o);
+    assert!(clash::add_chains(&mut doc, &chain).is_empty());
+    assert_eq!(clash::add_user_rules(&mut doc, &rules).len(), 1);
+    std::fs::write(dir.join("prism.yaml"), serde_yaml::to_string(&doc).unwrap()).unwrap();
+    clash::relays_to_dialer_proxy(&mut doc);
+    std::fs::write(dir.join("mihomo.yaml"), serde_yaml::to_string(&doc).unwrap()).unwrap();
+
+    let mut p = config::parse_any(raw).unwrap();
+    assert!(p.add_chains(&chain).is_empty());
+    let mut sb = singbox::emit(&p, &o);
+    singbox::apply_overrides(&mut sb, &o);
+    assert_eq!(singbox::add_user_rules(&mut sb, &rules).len(), 1);
+    std::fs::write(dir.join("singbox.json"), serde_json::to_string_pretty(&sb).unwrap()).unwrap();
 }

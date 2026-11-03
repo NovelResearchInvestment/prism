@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AppProvider, useApp } from "./state";
-import { CORE_NAMES } from "./api";
+import { api, CORE_NAMES } from "./api";
 import Home from "./pages/Home";
 import Proxies from "./pages/Proxies";
 import Profiles from "./pages/Profiles";
@@ -10,6 +10,7 @@ import Logs from "./pages/Logs";
 import SettingsPage from "./pages/Settings";
 import Apps from "./pages/Apps";
 import Routes from "./pages/Routes";
+import Chains from "./pages/Chains";
 import ImportDialog from "./ImportDialog";
 import CommandPalette, { PALETTE_KEY } from "./CommandPalette";
 import { setLang, t } from "./i18n";
@@ -22,6 +23,7 @@ const PAGES = [
   { key: "rules", label: "规则", icon: "≡", el: Rules },
   { key: "apps", label: "应用分流", icon: "⊞", el: Apps },
   { key: "routes", label: "域名分流", icon: "◈", el: Routes },
+  { key: "chains", label: "链式代理", icon: "⋈", el: Chains },
   { key: "logs", label: "日志", icon: "▤", el: Logs },
   { key: "settings", label: "设置", icon: "⚙", el: SettingsPage },
 ] as const;
@@ -34,7 +36,7 @@ function Shell() {
     const h = window.location.hash.slice(1);
     return (PAGES.find((p) => p.key === h)?.key ?? "home") as PageKey;
   });
-  const { snap, update } = useApp();
+  const { snap, update, run } = useApp();
   const Page = PAGES.find((p) => p.key === page)!.el;
   const theme = snap?.settings.theme ?? "system";
   useEffect(() => {
@@ -72,6 +74,18 @@ function Shell() {
         </div>
       </aside>
       <main className="main">
+        {snap?.kill_switch_blocking && (
+          <div className="notice row wrap" style={{ color: "var(--bad)" }}>
+            <b>{t("断网保护已生效：内核已退出，网络被拦截。")}</b>
+            <span className="spacer" />
+            <button className="btn sm" onClick={() => run(api.start)}>
+              {t("重启内核")}
+            </button>
+            <button className="btn sm danger" onClick={() => run(api.releaseKillSwitch, t("已解除拦截"))}>
+              {t("解除拦截")}
+            </button>
+          </div>
+        )}
         <Page go={setPage} />
       </main>
       <ImportDialog go={setPage} />

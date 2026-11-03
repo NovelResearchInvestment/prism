@@ -98,6 +98,9 @@ fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into()))
         .with_ansi(false)
         .with_target(false)
+        // With the GUI gone the log pipes are broken: reporting that to stderr
+        // would panic in the connection being logged.
+        .log_internal_errors(false)
         .init();
 
     let home = args
