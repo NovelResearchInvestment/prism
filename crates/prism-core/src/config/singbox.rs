@@ -9,8 +9,8 @@ use serde_json::{json, Map, Value};
 use super::clash::Overrides;
 use super::*;
 
-const GEOSITE_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs";
-const GEOIP_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{}.srs";
+pub const GEOSITE_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs";
+pub const GEOIP_URL: &str = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{}.srs";
 
 fn tls_json(p: &ProxyConfig) -> Value {
     let mut t = json!({ "enabled": true });

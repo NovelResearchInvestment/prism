@@ -35,6 +35,10 @@ export interface Settings {
   app_rules: AppRule[];
   route_rules: RouteRule[];
   chains: ChainRule[];
+  geosite_url: string;
+  geoip_url: string;
+  geosite_srs_url: string;
+  geoip_srs_url: string;
   kill_switch: boolean;
   tray_speed: boolean;
 }

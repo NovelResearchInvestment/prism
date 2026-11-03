@@ -203,6 +203,7 @@ pub fn write_runtime_config(store: &Store, s: &Settings) -> Result<RuntimeConfig
             let (mut doc, warnings) = clash_doc(store, s)?;
             if s.core == CoreKind::Mihomo {
                 clash::relays_to_dialer_proxy(&mut doc);
+                clash::set_geo_urls(&mut doc, &s.geosite_url, &s.geoip_url);
             }
             let path = dir.join("config.yaml");
             std::fs::write(&path, serde_yaml::to_string(&doc)?)?;

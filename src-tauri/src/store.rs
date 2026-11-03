@@ -57,6 +57,13 @@ pub struct Settings {
     pub route_rules: Vec<RouteRule>,
     /// Chains of nodes (链式代理), added to the profile as relay groups.
     pub chains: Vec<ChainRule>,
+    /// Custom sources tried before the built-in ones; empty: built-in only.
+    /// `geosite.dat` / `geoip.dat`, for Prism and mihomo.
+    pub geosite_url: String,
+    pub geoip_url: String,
+    /// sing-box rule-sets, with `{}` for the category.
+    pub geosite_srs_url: String,
+    pub geoip_srs_url: String,
     /// Windows, TUN through the service: block traffic outside the TUN, also
     /// after the core dies.
     pub kill_switch: bool,
@@ -94,6 +101,10 @@ impl Default for Settings {
             app_rules: Vec::new(),
             route_rules: Vec::new(),
             chains: Vec::new(),
+            geosite_url: String::new(),
+            geoip_url: String::new(),
+            geosite_srs_url: String::new(),
+            geoip_srs_url: String::new(),
             kill_switch: false,
             tray_speed: cfg!(target_os = "macos"),
         }

@@ -218,8 +218,7 @@ export const EN: Record<string, string> = {
   "{n} 跳": "{n} hops",
   "出口异常时拒绝：出口连不上或已从订阅中消失时，连接直接失败，不直连，也不改走其他规则。":
     "Reject on exit failure: if the exit can't connect or is gone from the profile, the connection fails instead of going direct or following other rules.",
-  "出口是代理组时，组内其他节点或 DIRECT 仍可能接管；要完全锁定请选具体节点。":
-    "With a group as the exit, its other nodes or DIRECT may still take over. Pick a specific node to lock it.",
+  "出口是代理组时不能选择；要使用这个选项，请选具体节点或链式代理。": "Not available with a group as the exit. Pick a specific node or proxy chain to use it.",
   异常时拒绝: "Reject on failure",
   "域名 / IP 分流": "Domain / IP rules",
   添加规则: "Add rule",
@@ -364,6 +363,13 @@ export const EN: Record<string, string> = {
   "自定义路径（默认 {exe}）": "Custom path (default {exe})",
   数据: "Data",
   "更新 GeoSite / GeoIP": "Update GeoSite / GeoIP",
+  "GeoSite 地址": "GeoSite URL",
+  "GeoIP 地址": "GeoIP URL",
+  "sing-box GeoSite 规则集地址": "sing-box GeoSite rule-set URL",
+  "sing-box GeoIP 规则集地址": "sing-box GeoIP rule-set URL",
+  "留空使用内置地址（输入框中的灰色文字）。填写后优先从这里下载，失败时仍会尝试内置地址。sing-box 规则集地址用 {} 代表分类名；订阅自带地址的规则集不受影响。修改后请先保存，再点「更新 GeoSite / GeoIP」。":
+    "Leave empty to use the built-in address (the grey text). A custom address is tried first, and the built-in ones still serve as a fallback. In sing-box rule-set URLs, {} stands for the category; rule-sets with their own URL in the profile are not affected. Save your changes, then click “Update GeoSite / GeoIP”.",
+  "地址需以 http:// 或 https:// 开头，sing-box 规则集地址要包含 {}。": "Addresses must start with http:// or https://, and sing-box rule-set URLs must contain {}.",
   "GeoSite / GeoIP 数据已更新，重启内核后生效": "GeoSite / GeoIP updated; restart the core to use them",
   查看生成的内核配置: "View generated core config",
   打开数据目录: "Open data folder",

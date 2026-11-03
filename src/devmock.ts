@@ -38,6 +38,10 @@ export function installDevMock() {
       { id: "2", enabled: true, by_path: true, value: "D:\\Games\\Steam\\steam.exe", target: "DIRECT" },
       { id: "3", enabled: false, by_path: false, value: "updater.exe", target: "REJECT" },
     ],
+    geosite_url: "",
+    geoip_url: "",
+    geosite_srs_url: "",
+    geoip_srs_url: "",
     kill_switch: false,
     chains: [{ id: "c1", enabled: true, name: "日本落地", hops: ["香港", "东京"] }],
     route_rules: [

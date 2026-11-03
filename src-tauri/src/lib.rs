@@ -742,7 +742,7 @@ async fn start(app: &AppHandle, st: &AppState) -> Res<()> {
     let rt = st.store.runtime_dir();
     if s.core == CoreKind::Prism && !(rt.join("geosite.dat").exists() && rt.join("geoip.dat").exists()) {
         st.core.push_log(app, "[prism] 正在下载 geosite.dat / geoip.dat ...".into());
-        if let Err(err) = download::geodata(&rt, None).await {
+        if let Err(err) = download::geodata(&rt, None, &s).await {
             st.core.push_log(app, format!("[prism] geodata 下载失败（GEOSITE/GEOIP 规则将被跳过）: {err:#}"));
         }
     }
@@ -805,7 +805,8 @@ const RULE_SET_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// are fetched now; stale ones are refreshed in the background (or now when
 /// `force`). Returns how many are still unavailable.
 async fn ensure_rule_sets(app: &AppHandle, st: &AppState, force: bool) -> Res<usize> {
-    let sets = core::singbox_rule_sets(&st.store, &st.settings()).map_err(e)?;
+    let settings = st.settings();
+    let sets = core::singbox_rule_sets(&st.store, &settings).map_err(e)?;
     let dir = st.store.rule_set_dir();
     let port = st.proxy_port().await;
     let mut now = Vec::new();
@@ -816,8 +817,9 @@ async fn ensure_rule_sets(app: &AppHandle, st: &AppState, force: bool) -> Res<us
             None => now.push((r, path)),
             Some(_) if force => now.push((r, path)),
             Some(a) if a > RULE_SET_MAX_AGE => {
+                let custom = download::custom_rule_set(&r, &settings);
                 tauri::async_runtime::spawn(async move {
-                    let _ = download::rule_set(&r.url, &path, port).await;
+                    let _ = download::rule_set(&r.url, custom.as_deref(), &path, port).await;
                 });
             }
             Some(_) => {}
@@ -828,7 +830,8 @@ async fn ensure_rule_sets(app: &AppHandle, st: &AppState, force: bool) -> Res<us
     }
     let tags: Vec<&str> = now.iter().map(|(r, _)| r.tag.as_str()).collect();
     st.core.push_log(app, format!("[prism] 正在下载规则集: {}", tags.join(", ")));
-    let results = futures::future::join_all(now.iter().map(|(r, path)| download::rule_set(&r.url, path, port))).await;
+    let customs: Vec<Option<String>> = now.iter().map(|(r, _)| download::custom_rule_set(r, &settings)).collect();
+    let results = futures::future::join_all(now.iter().zip(&customs).map(|((r, path), custom)| download::rule_set(&r.url, custom.as_deref(), path, port))).await;
     let mut failed = 0;
     for ((r, path), res) in now.iter().zip(results) {
         if let Err(err) = res {
@@ -1167,7 +1170,7 @@ async fn download_core(st: State<'_, AppState>, kind: CoreKind) -> Res<String> {
 #[tauri::command]
 async fn update_geodata(app: AppHandle, st: State<'_, AppState>) -> Res<()> {
     let port = st.proxy_port().await;
-    download::geodata(&st.store.runtime_dir(), port).await.map_err(e)?;
+    download::geodata(&st.store.runtime_dir(), port, &st.settings()).await.map_err(e)?;
     if st.settings().core == CoreKind::Singbox && st.settings().active_profile.is_some() {
         let failed = ensure_rule_sets(&app, &st, true).await?;
         if failed > 0 {

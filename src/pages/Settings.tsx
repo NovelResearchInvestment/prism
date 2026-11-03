@@ -360,6 +360,19 @@ function TunServiceCard() {
   );
 }
 
+/** Custom geodata sources; the built-in addresses show as placeholders. */
+const GEO_SOURCES = [
+  { key: "geosite_url", label: "GeoSite 地址", builtin: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat" },
+  { key: "geoip_url", label: "GeoIP 地址", builtin: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat" },
+  { key: "geosite_srs_url", label: "sing-box GeoSite 规则集地址", builtin: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs" },
+  { key: "geoip_srs_url", label: "sing-box GeoIP 规则集地址", builtin: "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{}.srs" },
+] as const;
+
+function badGeoUrl(key: (typeof GEO_SOURCES)[number]["key"], value: string) {
+  const v = value.trim();
+  return !!v && (!/^https?:\/\//i.test(v) || (key.endsWith("_srs_url") && !v.includes("{}")));
+}
+
 /** 开机自启 / 静默启动 and which program opens clash:// links. */
 function StartupCard({ form, set }: { form: Settings; set: <K extends keyof Settings>(k: K, v: Settings[K]) => void }) {
   const { snap, run } = useApp();
@@ -575,6 +588,18 @@ export default function SettingsPage() {
               {t("打开数据目录")}
             </button>
             <span className="small muted mono">{snap.data_dir}</span>
+          </div>
+          <div className="grid cols-2" style={{ marginTop: 14 }}>
+            {GEO_SOURCES.map(({ key, label, builtin }) => (
+              <div className="field" key={key}>
+                <label>{t(label)}</label>
+                <input className="input mono" placeholder={builtin} value={form[key]} onChange={(e) => set(key, e.target.value)} />
+              </div>
+            ))}
+          </div>
+          <div className="small muted">
+            {t("留空使用内置地址（输入框中的灰色文字）。填写后优先从这里下载，失败时仍会尝试内置地址。sing-box 规则集地址用 {} 代表分类名；订阅自带地址的规则集不受影响。修改后请先保存，再点「更新 GeoSite / GeoIP」。")}
+            {GEO_SOURCES.some(({ key }) => badGeoUrl(key, form[key])) && <span style={{ color: "var(--bad)" }}> {t("地址需以 http:// 或 https:// 开头，sing-box 规则集地址要包含 {}。")}</span>}
           </div>
         </div>
 

@@ -540,6 +540,21 @@ pub fn add_user_rules(v: &mut Value, rules: &[UserRule]) -> Vec<String> {
     warnings
 }
 
+/// mihomo downloads a missing geodata file itself: from the custom sources
+/// too, when set. Other sources in the profile stay.
+pub fn set_geo_urls(v: &mut Value, geosite: &str, geoip: &str) {
+    let Some(root) = v.as_mapping_mut() else { return };
+    for (key, url) in [("geosite", geosite.trim()), ("geoip", geoip.trim())] {
+        if url.is_empty() {
+            continue;
+        }
+        let geox = root.entry(Value::String("geox-url".into())).or_insert_with(|| Value::Mapping(Mapping::new()));
+        if let Value::Mapping(m) = geox {
+            put(m, key, url);
+        }
+    }
+}
+
 /// Adds the GUI's chains as relay groups. Returns warnings for skipped ones.
 pub fn add_chains(v: &mut Value, chains: &[Chain]) -> Vec<String> {
     let mut warnings = Vec::new();
@@ -715,6 +730,18 @@ mod tests {
         assert!(w[0].contains("rejecting"), "{w:?}");
         let rules: Vec<&str> = v["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
         assert_eq!(rules, ["PROCESS-NAME,x.exe,REJECT", "DOMAIN,a.test,REJECT", "MATCH,DIRECT"]);
+    }
+
+    #[test]
+    fn geo_urls_only_when_set() {
+        let mut v: Value = serde_yaml::from_str("geox-url: {mmdb: https://m.test/a}\n").unwrap();
+        set_geo_urls(&mut v, "", " https://g.test/ip.dat ");
+        assert_eq!(v["geox-url"]["geoip"].as_str(), Some("https://g.test/ip.dat"));
+        assert_eq!(v["geox-url"]["mmdb"].as_str(), Some("https://m.test/a"));
+        assert!(v["geox-url"].get("geosite").is_none());
+        let mut empty: Value = serde_yaml::from_str("mode: rule\n").unwrap();
+        set_geo_urls(&mut empty, "", "");
+        assert!(empty.get("geox-url").is_none());
     }
 
     #[test]

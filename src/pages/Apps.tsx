@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, errText, type AppRule, type Outbounds, type ProcessInfo } from "../api";
+import { api, errText, type AppRule, type ChainRule, type Outbounds, type ProcessInfo } from "../api";
 import { useApp } from "../state";
 import { t } from "../i18n";
 
@@ -35,17 +35,23 @@ export function TargetSelect({ value, outs, onChange }: { value: string; outs: O
   );
 }
 
+/** Whether 出口异常时拒绝 applies: a group's own members could still take over. Chains are listed among the groups but are a fixed path. */
+export function canStrict(target: string, outs: Outbounds | null, chains: ChainRule[]) {
+  if (target === "DIRECT" || target === "REJECT") return false;
+  return !outs?.groups.includes(target) || chains.some((c) => c.name === target);
+}
+
 /** 出口异常时拒绝: only for rules that name an exit that can go away. */
 export function StrictOption({ target, outs, value, onChange }: { target: string; outs: Outbounds | null; value: boolean; onChange: (v: boolean) => void }) {
+  const chains = useApp().snap?.settings.chains ?? [];
   if (target === "DIRECT" || target === "REJECT") return null;
+  const allowed = canStrict(target, outs, chains);
   return (
-    <label className="row small" style={{ gap: 8, cursor: "pointer", alignItems: "flex-start" }}>
-      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
-      <span>
+    <label className="row small" style={{ gap: 8, cursor: allowed ? "pointer" : "not-allowed", alignItems: "flex-start" }}>
+      <input type="checkbox" disabled={!allowed} checked={allowed && value} onChange={(e) => onChange(e.target.checked)} />
+      <span className={allowed ? "" : "muted"}>
         {t("出口异常时拒绝：出口连不上或已从订阅中消失时，连接直接失败，不直连，也不改走其他规则。")}
-        {value && outs?.groups.includes(target) && (
-          <span style={{ color: "var(--bad)" }}> {t("出口是代理组时，组内其他节点或 DIRECT 仍可能接管；要完全锁定请选具体节点。")}</span>
-        )}
+        {!allowed && <span> {t("出口是代理组时不能选择；要使用这个选项，请选具体节点或链式代理。")}</span>}
       </span>
     </label>
   );
@@ -71,7 +77,9 @@ export function AppRuleDialog({
   onSave: (rule: AppRule) => Promise<boolean>;
 }) {
   const outs = useOutbounds();
-  const mac = useApp().snap?.platform === "macos";
+  const { snap } = useApp();
+  const mac = snap?.platform === "macos";
+  const chains = snap?.settings.chains ?? [];
   const [procs, setProcs] = useState<ProcessInfo[] | null>(null);
   const [search, setSearch] = useState("");
   const [picked, setPicked] = useState<{ name: string; path: string } | null>(
@@ -114,7 +122,7 @@ export function AppRuleDialog({
       by_path: byPath,
       value: value.trim(),
       target: target || "DIRECT",
-      strict: strict && target !== "DIRECT" && target !== "REJECT",
+      strict: strict && canStrict(target, outs, chains),
     });
     setSaving(false);
     if (ok) onClose();
@@ -196,6 +204,7 @@ export default function Apps() {
   const outs = useOutbounds();
   const [dialog, setDialog] = useState<(Partial<AppRule> & { path?: string }) | null>(null);
   const rules = snap?.settings.app_rules ?? [];
+  const chains = snap?.settings.chains ?? [];
 
   const save = async (next: AppRule[], ok = t("已保存")) => {
     try {
@@ -236,10 +245,10 @@ export default function Apps() {
             {r.by_path && <span className="muted small mono">{r.value}</span>}
           </div>
           <span className="tag">{r.by_path ? t("按路径") : t("按程序名")}</span>
-          {r.strict && <span className="tag accent">{t("异常时拒绝")}</span>}
+          {r.strict && canStrict(r.target, outs, chains) && <span className="tag accent">{t("异常时拒绝")}</span>}
           <span className="muted">→</span>
           <div style={{ width: 200 }}>
-            <TargetSelect value={r.target} outs={outs} onChange={(t) => save(rules.map((x) => (x.id === r.id ? { ...x, target: t } : x)))} />
+            <TargetSelect value={r.target} outs={outs} onChange={(v) => save(rules.map((x) => (x.id === r.id ? { ...x, target: v, strict: x.strict && canStrict(v, outs, chains) } : x)))} />
           </div>
           <button className="btn sm" onClick={() => setDialog(r)}>
             {t("编辑")}

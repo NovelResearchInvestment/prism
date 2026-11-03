@@ -136,13 +136,21 @@ pub async fn core(kind: CoreKind, dest_dir: &Path, proxy_port: Option<u16>) -> R
     Ok(tag)
 }
 
+/// Where to fetch a geodata file: the custom URL if any, then the built-in ones.
+fn geo_sources(file: &str, custom: &str) -> Vec<String> {
+    let custom = Some(custom.trim()).filter(|c| !c.is_empty()).map(String::from);
+    custom.into_iter().chain(GEO_MIRRORS.iter().map(|m| format!("{m}{file}"))).collect()
+}
+
 /// Downloads geosite.dat and geoip.dat (used by prism-core and mihomo).
-pub async fn geodata(dir: &Path, proxy_port: Option<u16>) -> Result<()> {
+pub async fn geodata(dir: &Path, proxy_port: Option<u16>, s: &crate::store::Settings) -> Result<()> {
     let c = client(proxy_port)?;
-    for file in ["geosite.dat", "geoip.dat"] {
+    for (file, custom) in [("geosite.dat", &s.geosite_url), ("geoip.dat", &s.geoip_url)] {
         let mut last = None;
-        for m in GEO_MIRRORS {
-            match fetch(&c, &format!("{m}{file}")).await {
+        for url in geo_sources(file, custom) {
+            match fetch(&c, &url).await {
+                // Rejects HTML error pages too.
+                Ok(data) if data.first() == Some(&b'<') => last = Some(anyhow!("{url}: not a geodata file")),
                 Ok(data) if data.len() > 1024 => {
                     let tmp = dir.join(format!("{file}.download"));
                     std::fs::write(&tmp, data)?;
@@ -193,10 +201,27 @@ pub fn mirror(url: &str) -> Option<String> {
     Some(format!("https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"))
 }
 
-/// Downloads a sing-box rule-set to `dest`: through the running proxy if
-/// any, then the jsdelivr mirror, then the original URL.
-pub async fn rule_set(url: &str, dest: &Path, proxy_port: Option<u16>) -> Result<()> {
+/// The custom source of a rule-set generated from the built-in templates.
+/// A rule-set the profile brings itself keeps its own URL.
+pub fn custom_rule_set(r: &prism_core::config::singbox::RemoteRuleSet, s: &crate::store::Settings) -> Option<String> {
+    use prism_core::config::singbox::{GEOIP_URL, GEOSITE_URL};
+    [("geosite-", GEOSITE_URL, &s.geosite_srs_url), ("geoip-", GEOIP_URL, &s.geoip_srs_url)].into_iter().find_map(|(prefix, builtin, custom)| {
+        let category = r.tag.strip_prefix(prefix)?;
+        let custom = custom.trim();
+        (!custom.is_empty() && r.url == builtin.replace("{}", category)).then(|| custom.replace("{}", category))
+    })
+}
+
+/// Downloads a sing-box rule-set to `dest`: the custom URL if any, through
+/// the running proxy if any, then the jsdelivr mirror, then the original URL.
+pub async fn rule_set(url: &str, custom: Option<&str>, dest: &Path, proxy_port: Option<u16>) -> Result<()> {
     let mut tries: Vec<(String, Option<u16>)> = Vec::new();
+    if let Some(c) = custom {
+        if proxy_port.is_some() {
+            tries.push((c.to_string(), proxy_port));
+        }
+        tries.push((c.to_string(), None));
+    }
     if proxy_port.is_some() {
         tries.push((url.to_string(), proxy_port));
     }
@@ -261,9 +286,62 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("geosite-private.srs");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(rule_set("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-private.srs", &dest, None))
+        rt.block_on(rule_set("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-private.srs", None, &dest, None))
             .unwrap();
         assert!(std::fs::read(&dest).unwrap().starts_with(b"SRS"));
+    }
+
+    #[test]
+    fn custom_geodata_goes_first_and_keeps_the_built_in_ones() {
+        let builtin: Vec<String> = GEO_MIRRORS.iter().map(|m| format!("{m}geoip.dat")).collect();
+        assert_eq!(geo_sources("geoip.dat", ""), builtin);
+        assert_eq!(geo_sources("geoip.dat", "  "), builtin);
+        let with = geo_sources("geoip.dat", " https://my.test/g.dat ");
+        assert_eq!(with[0], "https://my.test/g.dat");
+        assert_eq!(&with[1..], builtin.as_slice());
+    }
+
+    #[test]
+    fn custom_rule_sets_replace_only_the_generated_ones() {
+        use prism_core::config::singbox::{RemoteRuleSet, GEOIP_URL, GEOSITE_URL};
+        let s = crate::store::Settings { geosite_srs_url: "https://my.test/site-{}.srs".into(), ..Default::default() };
+        let set = |tag: &str, url: String| RemoteRuleSet { tag: tag.into(), url, file: String::new() };
+        assert_eq!(custom_rule_set(&set("geosite-cn", GEOSITE_URL.replace("{}", "cn")), &s).as_deref(), Some("https://my.test/site-cn.srs"));
+        assert_eq!(custom_rule_set(&set("geoip-cn", GEOIP_URL.replace("{}", "cn")), &s), None, "no custom geoip set");
+        assert_eq!(custom_rule_set(&set("geosite-cn", "https://profile.test/own.srs".into()), &s), None, "the profile's own URL stays");
+    }
+
+    /// One local answer to any request.
+    fn serve_once(body: &'static [u8]) -> String {
+        use std::io::Write;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = std::io::Read::read(&mut c, &mut buf);
+            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = c.write_all(body);
+        });
+        format!("http://127.0.0.1:{port}/x")
+    }
+
+    #[test]
+    fn downloads_from_the_custom_source() {
+        static SRS: &[u8] = b"SRS custom";
+        static DAT: [u8; 2000] = [7; 2000];
+        let dir = std::env::temp_dir().join(format!("prism-geo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dest = dir.join("geosite-cn.srs");
+        // An unusable built-in URL: only the custom source can succeed.
+        rt.block_on(rule_set("http://127.0.0.1:1/x.srs", Some(&serve_once(SRS)), &dest, None)).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), SRS);
+
+        let s = crate::store::Settings { geosite_url: serve_once(&DAT), geoip_url: serve_once(&DAT), ..Default::default() };
+        rt.block_on(geodata(&dir, None, &s)).unwrap();
+        assert_eq!(std::fs::read(dir.join("geosite.dat")).unwrap().len(), DAT.len());
+        assert_eq!(std::fs::read(dir.join("geoip.dat")).unwrap().len(), DAT.len());
     }
 
     #[test]

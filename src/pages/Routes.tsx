@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errText, type RouteKind, type RouteRule } from "../api";
 import { useApp } from "../state";
-import { StrictOption, TargetSelect, useOutbounds } from "./Apps";
+import { canStrict, StrictOption, TargetSelect, useOutbounds } from "./Apps";
 import { t } from "../i18n";
 
 const KINDS: { kind: RouteKind; label: string; hint: string }[] = [
@@ -35,6 +35,7 @@ export function RouteRuleDialog({
   onSave: (rules: RouteRule[]) => Promise<boolean>;
 }) {
   const outs = useOutbounds();
+  const chains = useApp().snap?.settings.chains ?? [];
   const editing = !!initial.id;
   const [kind, setKind] = useState<RouteKind>(initial.kind ?? "DOMAIN-SUFFIX");
   const [text, setText] = useState(initial.value ?? "");
@@ -63,7 +64,7 @@ export function RouteRuleDialog({
         value,
         target: target || "DIRECT",
         resolve: isIp(kind) && resolve,
-        strict: strict && target !== "DIRECT" && target !== "REJECT",
+        strict: strict && canStrict(target, outs, chains),
       })),
     );
     setSaving(false);
@@ -146,6 +147,7 @@ export default function Routes() {
   const save = useSaveRouteRules();
   const [dialog, setDialog] = useState<Partial<RouteRule> | null>(null);
   const rules = snap?.settings.route_rules ?? [];
+  const chains = snap?.settings.chains ?? [];
 
   const upsert = (added: RouteRule[]) => {
     if (dialog?.id) return save(rules.map((x) => (x.id === dialog.id ? added[0] : x)));
@@ -178,14 +180,14 @@ export default function Routes() {
         <div className="card app-rule" key={r.id}>
           <button className={`switch ${r.enabled ? "on" : ""}`} title={r.enabled ? t("停用") : t("启用")} onClick={() => save(rules.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)))} />
           <span className="tag">{kindLabel(r.kind)}</span>
-          {r.strict && <span className="tag accent">{t("异常时拒绝")}</span>}
+          {r.strict && canStrict(r.target, outs, chains) && <span className="tag accent">{t("异常时拒绝")}</span>}
           <div className="app-name" title={r.value}>
             <b className="mono">{r.value}</b>
             {r.resolve && <span className="muted small">{t("也匹配解析后的域名")}</span>}
           </div>
           <span className="muted">→</span>
           <div style={{ width: 200 }}>
-            <TargetSelect value={r.target} outs={outs} onChange={(v) => save(rules.map((x) => (x.id === r.id ? { ...x, target: v } : x)))} />
+            <TargetSelect value={r.target} outs={outs} onChange={(v) => save(rules.map((x) => (x.id === r.id ? { ...x, target: v, strict: x.strict && canStrict(v, outs, chains) } : x)))} />
           </div>
           <button className="btn sm" disabled={i === 0} title={t("上移（越靠前越先匹配）")} onClick={() => move(i)}>
             ↑
