@@ -4,8 +4,6 @@ name: Kill switch
 # each step takes the runner's network away for a few seconds.
 on:
   workflow_dispatch:
-  push:
-    branches: [test/kill-switch]
 
 jobs:
   test:
