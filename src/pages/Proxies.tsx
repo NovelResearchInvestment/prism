@@ -8,6 +8,9 @@ import SpeedDialog from "./SpeedTest";
 import { t } from "../i18n";
 
 type ProxyMap = Record<string, ProxyItem>;
+
+/** A chain, or something generated for it: `name · ...`. */
+export const isChainPart = (name: string, chains: string[]) => chains.some((c) => name === c || name.startsWith(`${c} · `));
 type SortKey = "default" | "delay" | "name";
 
 const SORTS: [SortKey, string][] = [
@@ -147,7 +150,9 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
 
   const mode = snap!.settings.mode;
   const order = proxies["GLOBAL"]?.all ?? Object.keys(proxies);
-  let groups = order.map((n) => proxies[n]).filter((p): p is ProxyItem => !!p?.all && !p.hidden);
+  const chains = (snap!.settings.chains ?? []).filter((c) => c.enabled && proxies[c.name]);
+  const chainNames = (snap!.settings.chains ?? []).map((c) => c.name);
+  let groups = order.map((n) => proxies[n]).filter((p): p is ProxyItem => !!p?.all && !p.hidden && !isChainPart(p.name, chainNames));
   if (mode === "global" && proxies["GLOBAL"]) groups = [proxies["GLOBAL"], ...groups];
   // Members of one group can't be selected if the group is automatic.
   const selectable = (g: ProxyItem) => g.type === "Selector";
@@ -216,7 +221,8 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
 
   const q = query.trim().toLowerCase();
   const membersOf = (g: ProxyItem) => {
-    let list = g.all ?? [];
+    // GLOBAL lists every chain's internal copies too.
+    let list = (g.all ?? []).filter((n) => chainNames.includes(n) || !isChainPart(n, chainNames));
     // A group whose own name matches shows all its members.
     if (q && !g.name.toLowerCase().includes(q)) list = list.filter((n) => n.toLowerCase().includes(q));
     if (sort === "delay") list = [...list].sort((a, b) => delayRank(lastDelay(proxies[a])) - delayRank(lastDelay(proxies[b])));
@@ -224,6 +230,11 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
     return list;
   };
   const shown = groups.map((g) => ({ g, members: membersOf(g) })).filter((x) => !q || x.members.length > 0);
+
+  // Copies a chain's later group hops become on mihomo and sing-box, where a
+  // choice is made per chain.
+  const chainGroups = (name: string) => Object.values(proxies).filter((p) => p.all && p.type === "Selector" && isChainPart(p.name, [name]));
+  const shownChains = chains.filter((c) => !q || [c.name, ...c.hops].some((x) => x.toLowerCase().includes(q)));
 
   const select = async (g: ProxyItem, name: string) => {
     if (!selectable(g)) {
@@ -233,50 +244,7 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
     if (await run(() => api.selectProxy(g.name, name))) load();
   };
 
-  return (
-    <>
-      <div className="page-head">
-        <h1>{t("代理")}</h1>
-        <span className="tag accent">{mode === "rule" ? t("规则模式") : mode === "global" ? t("全局模式") : t("直连模式")}</span>
-        <button className="btn" onClick={load}>
-          {t("刷新")}
-        </button>
-        <button className="btn" onClick={() => setQuality(true)}>
-          {t("节点质量")}
-        </button>
-        <button className="btn" onClick={() => setSpeed(true)}>
-          {t("带宽测速")}
-        </button>
-        <button className="btn" onClick={() => setUnlock(true)}>
-          {t("解锁检测")}
-        </button>
-        <button className="btn primary" disabled={!!progress} onClick={testAll}>
-          {progress ? t("测速中 {done}/{total}", { done: progress.done, total: progress.total }) : t("全部测速")}
-        </button>
-      </div>
-
-      <div className="row proxy-tools">
-        <input
-          className="input"
-          style={{ flex: 1 }}
-          placeholder={t("搜索节点或代理组")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-        />
-        <span className="small muted">{t("排序")}</span>
-        <div className="seg">
-          {SORTS.map(([k, label]) => (
-            <button key={k} className={sort === k ? "on" : ""} onClick={() => changeSort(k)}>
-              {t(label)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <ProxyProviders onChange={load} />
-
-      {shown.map(({ g, members }) => {
+  const groupCard = ({ g, members }: { g: ProxyItem; members: string[] }) => {
         // Searching opens every group that has a match.
         const isOpen = q ? true : (open[g.name] ?? groups.length <= 3);
         const delayOfNow = lastDelay(proxies[g.now ?? ""]);
@@ -325,7 +293,69 @@ export default function Proxies({ go }: { go: (p: PageKey) => void }) {
             )}
           </div>
         );
-      })}
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <h1>{t("代理")}</h1>
+        <span className="tag accent">{mode === "rule" ? t("规则模式") : mode === "global" ? t("全局模式") : t("直连模式")}</span>
+        <button className="btn" onClick={load}>
+          {t("刷新")}
+        </button>
+        <button className="btn" onClick={() => setQuality(true)}>
+          {t("节点质量")}
+        </button>
+        <button className="btn" onClick={() => setSpeed(true)}>
+          {t("带宽测速")}
+        </button>
+        <button className="btn" onClick={() => setUnlock(true)}>
+          {t("解锁检测")}
+        </button>
+        <button className="btn primary" disabled={!!progress} onClick={testAll}>
+          {progress ? t("测速中 {done}/{total}", { done: progress.done, total: progress.total }) : t("全部测速")}
+        </button>
+      </div>
+
+      <div className="row proxy-tools">
+        <input
+          className="input"
+          style={{ flex: 1 }}
+          placeholder={t("搜索节点或代理组")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+        />
+        <span className="small muted">{t("排序")}</span>
+        <div className="seg">
+          {SORTS.map(([k, label]) => (
+            <button key={k} className={sort === k ? "on" : ""} onClick={() => changeSort(k)}>
+              {t(label)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <ProxyProviders onChange={load} />
+
+      {shown.map(groupCard)}
+      {shownChains.length > 0 && <h3 style={{ margin: "18px 0 10px" }}>{t("链式代理")}</h3>}
+      {shownChains.map((c) => (
+        <div key={c.id}>
+          <div className="card group">
+            <div className="group-head">
+              <span className="name">{c.name}</span>
+              <span className="tag">{t("链式代理")}</span>
+              <span className="now" title={c.hops.join(" → ")}>
+                {c.hops.join(" → ")}
+              </span>
+              <span className="spacer" />
+              <DelayView d={lastDelay(proxies[c.name])} testing={!!testing[c.name]} onTest={() => testOne(c.name)} />
+            </div>
+          </div>
+          {chainGroups(c.name).map((g) => groupCard({ g, members: membersOf(g) }))}
+        </div>
+      ))}
       {groups.length === 0 && <div className="empty">{t("没有代理组")}</div>}
       {groups.length > 0 && shown.length === 0 && <div className="empty">{t("没有匹配「{q}」的节点", { q: query.trim() })}</div>}
       {unlock && <UnlockDialog onClose={() => setUnlock(false)} />}

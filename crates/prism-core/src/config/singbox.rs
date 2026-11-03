@@ -259,24 +259,48 @@ fn rule_cond(kind: &str, pl: &str, sets: &mut BTreeSet<(String, String)>) -> Opt
 /// copies of the hops, each dialing through the previous one. The last copy
 /// takes the group's name. The first hop may be a group; the later ones
 /// must be nodes.
-fn relay_chain(g: &GroupConfig, proxies: &[ProxyConfig]) -> Option<Vec<Value>> {
-    let hops: Vec<&String> = g.proxies.iter().filter(|h| h.as_str() != "DIRECT").collect();
-    let (first, rest) = hops.split_first()?;
-    let mut prev = (*first).clone();
-    let mut out = Vec::new();
-    for (i, hop) in rest.iter().enumerate() {
-        let node = proxies.iter().find(|p| &&p.name == hop)?;
-        let mut copy = node.clone();
-        copy.name = if i + 1 == rest.len() { g.name.clone() } else { format!("{} · {}", g.name, i + 1) };
-        copy.dialer_proxy = Some(prev.clone());
-        prev = copy.name.clone();
-        out.push(emit_outbound(&copy));
-    }
-    if out.is_empty() {
+fn relay_chain(g: &GroupConfig, p: &Profile) -> Option<Vec<Value>> {
+    let hops: Vec<String> = g.proxies.iter().filter(|h| h.as_str() != "DIRECT").cloned().collect();
+    let first = hops.first()?.clone();
+    if hops.len() == 1 {
         // A one-hop relay is just that hop.
         return Some(vec![json!({ "type": "selector", "tag": g.name, "outbounds": [first] })]);
     }
+    let plan = plan_relay(&g.name, &hops, &|n| p.relay_hop(n))?;
+    let mut out = Vec::new();
+    for item in plan {
+        match item {
+            RelayCopy::Node { name, base, via } => {
+                let mut copy = p.proxies.iter().find(|x| x.name == base)?.clone();
+                copy.name = name;
+                copy.dialer_proxy = Some(via);
+                out.push(emit_outbound(&copy));
+            }
+            RelayCopy::Group { name, base, members } => {
+                let mut copy = p.groups.iter().find(|x| x.name == base)?.clone();
+                copy.name = name;
+                copy.proxies = members;
+                out.push(group_outbound(&copy));
+            }
+        }
+    }
     Some(out)
+}
+
+fn group_outbound(g: &GroupConfig) -> Value {
+    let l: Vec<String> = g.proxies.iter().filter(|x| x.as_str() != "REJECT").cloned().collect();
+    let members = if l.is_empty() { vec!["DIRECT".to_string()] } else { l };
+    let mut v = match g.kind {
+        GroupKind::Select => json!({ "type": "selector", "tag": g.name, "outbounds": members }),
+        _ => json!({
+            "type": "urltest", "tag": g.name, "outbounds": members,
+            "url": g.url, "interval": format!("{}s", g.interval), "tolerance": g.tolerance,
+        }),
+    };
+    if g.kind == GroupKind::Select {
+        v["interrupt_exist_connections"] = json!(true);
+    }
+    v
 }
 
 /// Remote entry without a download detour: `download_detour` is deprecated
@@ -385,30 +409,16 @@ pub fn localize_rule_sets(v: &mut Value, dir: &std::path::Path) -> Vec<String> {
 pub fn emit(p: &Profile, o: &Overrides) -> Value {
     let mut outbounds: Vec<Value> = Vec::new();
     let mut members_all: Vec<String> = Vec::new();
-    let strip = |v: &Vec<String>| -> Vec<String> {
-        let l: Vec<String> = v.iter().filter(|x| x.as_str() != "REJECT").cloned().collect();
-        if l.is_empty() { vec!["DIRECT".into()] } else { l }
-    };
     for g in &p.groups {
         members_all.push(g.name.clone());
         if g.kind == GroupKind::Relay {
-            match relay_chain(g, &p.proxies) {
+            match relay_chain(g, p) {
                 Some(chain) => outbounds.extend(chain),
-                None => outbounds.push(json!({ "type": "selector", "tag": g.name, "outbounds": strip(&g.proxies) })),
+                None => outbounds.push(json!({ "type": "selector", "tag": g.name, "outbounds": group_outbound(g)["outbounds"] })),
             }
             continue;
         }
-        let mut v = match g.kind {
-            GroupKind::Select => json!({ "type": "selector", "tag": g.name, "outbounds": strip(&g.proxies) }),
-            _ => json!({
-                "type": "urltest", "tag": g.name, "outbounds": strip(&g.proxies),
-                "url": g.url, "interval": format!("{}s", g.interval), "tolerance": g.tolerance,
-            }),
-        };
-        if g.kind == GroupKind::Select {
-            v["interrupt_exist_connections"] = json!(true);
-        }
-        outbounds.push(v);
+        outbounds.push(group_outbound(g));
     }
     let mut endpoints: Vec<Value> = Vec::new();
     for px in &p.proxies {

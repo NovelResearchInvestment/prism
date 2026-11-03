@@ -417,8 +417,65 @@ pub struct UserRule {
     pub strict: bool,
 }
 
-/// A chain of nodes set up in the GUI: traffic goes through `hops` in order.
-/// Becomes a relay group, also offered in the profile's first select group.
+/// What a later relay hop can be turned into.
+pub enum RelayHop {
+    Node,
+    /// A group whose members are all known.
+    Group(Vec<String>),
+    /// A provider's group, another relay, or nothing at all.
+    Unknown,
+}
+
+/// One thing to add for a relay on cores that only have per-node dialers.
+#[derive(Debug, PartialEq)]
+pub enum RelayCopy {
+    /// A copy of node `base` dialing through `via`.
+    Node { name: String, base: String, via: String },
+    /// A copy of group `base` over copies of its members.
+    Group { name: String, base: String, members: Vec<String> },
+}
+
+fn copy_hop(hop: &str, name: &str, via: &str, kind: &dyn Fn(&str) -> RelayHop, out: &mut Vec<RelayCopy>, depth: u32) -> Option<()> {
+    match kind(hop) {
+        RelayHop::Node => out.push(RelayCopy::Node { name: name.into(), base: hop.into(), via: via.into() }),
+        RelayHop::Group(list) if depth < 8 => {
+            let mut members = Vec::new();
+            for m in list {
+                match m.as_str() {
+                    // Going direct from here means leaving at the previous hop.
+                    "DIRECT" => members.push(via.to_string()),
+                    "REJECT" => members.push(m),
+                    _ => {
+                        let copy = format!("{name} · {m}");
+                        copy_hop(&m, &copy, via, kind, out, depth + 1)?;
+                        members.push(copy);
+                    }
+                }
+            }
+            out.push(RelayCopy::Group { name: name.into(), base: hop.into(), members });
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// Rebuilds a relay from dialers: the first hop stays what it is, each later
+/// one becomes a copy that dials through the hop before it, the last taking
+/// the relay's name. `None` if a later hop can't be copied.
+pub fn plan_relay(name: &str, hops: &[String], kind: &dyn Fn(&str) -> RelayHop) -> Option<Vec<RelayCopy>> {
+    let mut prev = hops.first()?.clone();
+    let mut out = Vec::new();
+    let later = &hops[1..];
+    for (i, h) in later.iter().enumerate() {
+        let copy = if i + 1 == later.len() { name.to_string() } else { format!("{name} · {}", i + 1) };
+        copy_hop(h, &copy, &prev, kind, &mut out, 0)?;
+        prev = copy;
+    }
+    Some(out)
+}
+
+/// A chain set up in the GUI: traffic goes through `hops`, nodes or groups,
+/// in order. Becomes a relay group, used as an exit by name.
 #[derive(Clone, Debug)]
 pub struct Chain {
     pub name: String,
@@ -427,7 +484,7 @@ pub struct Chain {
 
 impl Chain {
     /// What keeps this chain from being added to a profile.
-    fn problem(&self, is_node: impl Fn(&str) -> bool, taken: impl Fn(&str) -> bool) -> Option<String> {
+    fn problem(&self, kind: impl Fn(&str) -> RelayHop, taken: impl Fn(&str) -> bool) -> Option<String> {
         if self.name.trim().is_empty() || self.name.contains(',') {
             return Some("invalid name".into());
         }
@@ -435,13 +492,17 @@ impl Chain {
             return Some("its name is already used by a node or group".into());
         }
         if self.hops.len() < 2 {
-            return Some("it needs at least two nodes".into());
+            return Some("it needs at least two hops".into());
         }
-        if let Some(h) = self.hops.iter().find(|h| !is_node(h)) {
-            return Some(format!("{h} is not a node of this profile"));
+        if !taken(&self.hops[0]) || ["DIRECT", "REJECT", "GLOBAL"].contains(&self.hops[0].as_str()) {
+            return Some(format!("{} is not a node or group of this profile", self.hops[0]));
+        }
+        // The first hop may be anything; later ones must be copyable on every core.
+        if plan_relay(&self.name, &self.hops, &kind).is_none() {
+            return Some("a later hop is not a node or a group with fixed members of this profile".into());
         }
         if self.hops.iter().enumerate().any(|(i, h)| self.hops[..i].contains(h)) {
-            return Some("a node appears twice".into());
+            return Some("a hop appears twice".into());
         }
         None
     }
@@ -589,20 +650,27 @@ pub struct Profile {
 }
 
 impl Profile {
+    pub fn relay_hop(&self, name: &str) -> RelayHop {
+        if self.proxies.iter().any(|p| p.name == name) {
+            return RelayHop::Node;
+        }
+        match self.groups.iter().find(|g| g.name == name) {
+            Some(g) if g.kind != GroupKind::Relay && g.use_providers.is_empty() => RelayHop::Group(g.proxies.clone()),
+            _ => RelayHop::Unknown,
+        }
+    }
+
     /// Adds the GUI's chains as relay groups. Returns warnings for skipped ones.
     pub fn add_chains(&mut self, chains: &[Chain]) -> Vec<String> {
         let mut warnings = Vec::new();
         for c in chains {
             let problem = c.problem(
-                |n| self.proxies.iter().any(|p| p.name == n),
+                |n| self.relay_hop(n),
                 |n| ["DIRECT", "REJECT", "GLOBAL"].contains(&n) || self.proxies.iter().any(|p| p.name == n) || self.groups.iter().any(|g| g.name == n),
             );
             if let Some(e) = problem {
                 warnings.push(format!("chain {} skipped: {e}", c.name));
                 continue;
-            }
-            if let Some(g) = self.groups.iter_mut().find(|g| g.kind == GroupKind::Select) {
-                g.proxies.push(c.name.clone());
             }
             self.groups.push(GroupConfig::new(&c.name, GroupKind::Relay, c.hops.clone()));
         }

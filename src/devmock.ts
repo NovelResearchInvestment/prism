@@ -101,6 +101,7 @@ export function installDevMock() {
     节点选择: { name: "节点选择", type: "Selector", now: "日本 东京", all: ["自动选择", ...nodeNames, "DIRECT"], history: [] },
     自动选择: { name: "自动选择", type: "URLTest", now: "香港 01", all: nodeNames, history: [] },
     流媒体: { name: "流媒体", type: "Selector", now: "新加坡", all: ["节点选择", "新加坡", "美国 洛杉矶", "台湾"], history: [] },
+    日本落地: { name: "日本落地", type: "Relay", all: ["香港", "东京"], now: "东京", history: [] },
     DIRECT: { name: "DIRECT", type: "Direct", history: [] },
     ...Object.fromEntries(nodeNames.map((n, i) => [n, node(n, i === 4 ? 0 : i < 3 ? 80 + i * 70 : undefined)])),
   };
@@ -178,7 +179,7 @@ export function installDevMock() {
       throw "预览模式不会安装更新";
     },
     core_versions: () => ({ prism: "prism-core preview", mihomo: null, singbox: null }),
-    profile_outbounds: () => ({ groups: ["节点选择", "自动选择"], proxies: ["东京", "香港"] }),
+    profile_outbounds: () => ({ groups: ["节点选择", "自动选择"], chains: settings.chains.filter((c) => c.enabled).map((c) => c.name), proxies: ["东京", "香港"] }),
     list_processes: () => processes,
     speed_test: async (a) => {
       await new Promise((r) => setTimeout(r, 1200));

@@ -6,7 +6,7 @@ import { t } from "../i18n";
 
 const enc = encodeURIComponent;
 
-/** Add / edit dialog: a name and the nodes in order. */
+/** Add / edit dialog: a name and the hops, nodes or groups, in order. */
 function ChainDialog({
   initial,
   outs,
@@ -23,7 +23,9 @@ function ChainDialog({
   const [name, setName] = useState(initial.name ?? "");
   const [hops, setHops] = useState<string[]>(initial.hops ?? []);
   const [saving, setSaving] = useState(false);
+  const groups = outs?.groups ?? [];
   const nodes = outs?.proxies ?? [];
+  const all = [...nodes, ...groups];
   useEffect(() => {
     if (hops.length === 0 && nodes.length > 0) setHops([nodes[0], nodes[1] ?? nodes[0]]);
   }, [hops.length, nodes]);
@@ -52,12 +54,25 @@ function ChainDialog({
             <label>{i === 0 ? t("第一跳") : i === hops.length - 1 ? t("落地") : t("第 {n} 跳", { n: i + 1 })}</label>
             <div className="row">
               <select className="input" style={{ flex: 1 }} value={h} onChange={(e) => setHops(hops.map((x, j) => (j === i ? e.target.value : x)))}>
-                {!nodes.includes(h) && <option value={h}>{t("{v}（当前订阅中不存在）", { v: h })}</option>}
-                {nodes.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
+                {!all.includes(h) && <option value={h}>{t("{v}（当前订阅中不存在）", { v: h })}</option>}
+                {groups.length > 0 && (
+                  <optgroup label={t("代理组")}>
+                    {groups.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {nodes.length > 0 && (
+                  <optgroup label={t("节点")}>
+                    {nodes.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
               <button className="btn sm danger" disabled={hops.length <= 2} onClick={() => setHops(hops.filter((_, j) => j !== i))}>
                 {t("删除")}
@@ -66,13 +81,13 @@ function ChainDialog({
           </div>
         ))}
         <div className="row">
-          <button className="btn sm" disabled={nodes.length === 0} onClick={() => setHops([...hops, nodes.find((n) => !hops.includes(n)) ?? nodes[0]])}>
+          <button className="btn sm" disabled={nodes.length === 0} onClick={() => setHops([...hops, all.find((n) => !hops.includes(n)) ?? nodes[0]])}>
             {t("添加一跳")}
           </button>
         </div>
         <div className="small" style={{ color: "var(--bad)" }}>
           {nameBad && t("名字已被订阅中的节点或代理组使用")}
-          {hopsBad && nodes.length > 0 && t("至少选择两个不同的节点")}
+          {hopsBad && nodes.length > 0 && t("至少选择两个不同的节点或代理组")}
         </div>
         <div className="row">
           <span className="spacer" />
@@ -96,8 +111,7 @@ export default function Chains() {
   const chains = snap?.settings.chains ?? [];
   const testUrl = snap?.settings.test_url ?? "";
   const mine = chains.map((c) => c.name);
-  // Enabled chains are listed among the profile's groups.
-  const taken = [...(outs?.proxies ?? []), ...(outs?.groups ?? []).filter((g) => !mine.includes(g)), "DIRECT", "REJECT", "GLOBAL", ...mine];
+  const taken = [...(outs?.proxies ?? []), ...(outs?.groups ?? []), "DIRECT", "REJECT", "GLOBAL", ...mine];
 
   const save = async (next: ChainRule[], ok = t("已保存")) => {
     try {
@@ -134,25 +148,27 @@ export default function Chains() {
       </div>
 
       <div className="notice">
-        {t("让流量依次经过多个节点，网站看到的是最后一个节点的 IP。保存后，链路会出现在第一个手动选择的代理组里，也可以作为应用分流、域名分流的出口。三种内核都支持。")}
+        {t("让流量依次经过多个节点或代理组，网站看到的是最后一跳的 IP。保存后，可以作为应用分流、域名分流的出口，也可以在全局模式下选择。三种内核都支持。")}
         {t("每多一跳，延迟通常更高，任何一个节点出问题都会让整条链路中断。走 UDP 的节点（TUIC、Hysteria2、WireGuard）要求前一跳支持 UDP。")}
       </div>
 
-      {chains.length === 0 && <div className="empty">{t("还没有链路。点「添加链路」，选择流量依次经过的节点。")}</div>}
+      {chains.length === 0 && <div className="empty">{t("还没有链路。点「添加链路」，选择流量依次经过的节点或代理组。")}</div>}
 
       {chains.map((c) => {
-        const missing = outs ? c.hops.find((h) => !outs.proxies.includes(h)) : undefined;
+        const missing = outs ? c.hops.find((h) => !outs.proxies.includes(h) && !outs.groups.includes(h)) : undefined;
+        const unusable = !!outs && c.enabled && !missing && !outs.chains.includes(c.name);
         return (
           <div className="card app-rule" key={c.id}>
             <button className={`switch ${c.enabled ? "on" : ""}`} title={c.enabled ? t("停用") : t("启用")} onClick={() => save(chains.map((x) => (x.id === c.id ? { ...x, enabled: !x.enabled } : x)))} />
             <div className="app-name" title={c.hops.join(" → ")}>
               <b>{c.name}</b>
               <span className="muted small">{c.hops.join(" → ")}</span>
-              {missing && <span className="small" style={{ color: "var(--bad)" }}>{t("当前订阅缺少节点 {v}，这条链路不会生效", { v: missing })}</span>}
+              {missing && <span className="small" style={{ color: "var(--bad)" }}>{t("当前订阅缺少 {v}，这条链路不会生效", { v: missing })}</span>}
+              {unusable && <span className="small" style={{ color: "var(--bad)" }}>{t("这条链路不会生效，原因见日志")}</span>}
             </div>
             <span className="tag">{t("{n} 跳", { n: c.hops.length })}</span>
             {delays[c.id] && <span className="small muted">{delays[c.id]}</span>}
-            <button className="btn sm" disabled={!snap?.running || !c.enabled || !!missing} onClick={() => test(c)}>
+            <button className="btn sm" disabled={!snap?.running || !c.enabled || !!missing || unusable} onClick={() => test(c)}>
               {t("测试")}
             </button>
             <button className="btn sm" onClick={() => setDialog(c)}>

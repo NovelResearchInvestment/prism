@@ -319,6 +319,115 @@ nav {
   font-size: 12.5px;
 }
 
+/* The 概览 page's round start / stop button, at the right of the header. */
+.core-power {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.core-toggle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #2878e6);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(70, 90, 240, 0.35);
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.core-toggle:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
+  box-shadow: 0 9px 22px rgba(70, 90, 240, 0.42);
+}
+
+.core-toggle:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.core-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.core-toggle:disabled {
+  cursor: progress;
+  opacity: 0.85;
+}
+
+.core-toggle.on {
+  background: color-mix(in srgb, var(--good) 12%, var(--panel));
+  border-color: var(--good);
+  color: var(--good);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 10%, transparent);
+}
+
+.core-toggle.on:hover:not(:disabled) {
+  filter: none;
+  background: color-mix(in srgb, var(--bad) 12%, var(--panel));
+  border-color: var(--bad);
+  color: var(--bad);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 10%, transparent);
+}
+
+.core-toggle.busy::after {
+  content: "";
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: core-toggle-spin 0.8s linear infinite;
+}
+
+.core-power-text {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.core-power-text b {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.core-power-text .small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.core-toggle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--good);
+  animation: core-toggle-pulse 2s ease-in-out infinite;
+}
+
+@keyframes core-toggle-pulse {
+  50% { opacity: 0.35; }
+}
+
+@keyframes core-toggle-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .core-toggle { transition: none; }
+  .core-toggle:hover:not(:disabled),
+  .core-toggle:active:not(:disabled) { transform: none; }
+  .core-toggle-dot { animation: none; }
+  .core-toggle.busy::after { animation-duration: 2.4s; }
+}
+
 .input,
 select.input,
 textarea.input {

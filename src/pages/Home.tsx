@@ -226,9 +226,30 @@ export default function Home({ go }: { go: (p: PageKey) => void }) {
     <>
       <div className="page-head">
         <h1>{t("概览")}</h1>
-        <button className={`btn ${running ? "" : "primary"}`} disabled={busy} onClick={toggleCore}>
-          {busy ? t("处理中…") : running ? t("停止内核") : t("启动内核")}
-        </button>
+        <div className="core-power">
+          <div className="core-power-text">
+            <b>{busy ? t("处理中…") : running ? t("停止内核") : t("启动内核")}</b>
+            <span className="small muted">
+              {running && <i className="core-toggle-dot" />}
+              {snap.running ? t("{core} 运行中", { core: t(CORE_NAMES[snap.running]) }) : t(CORE_NAMES[s.core])}
+            </span>
+          </div>
+          <button
+            className={`core-toggle ${running ? "on" : ""} ${busy ? "busy" : ""}`}
+            disabled={busy}
+            aria-busy={busy}
+            aria-label={running ? t("停止内核") : t("启动内核")}
+            title={running ? t("停止内核") : t("启动内核")}
+            onClick={toggleCore}
+          >
+            {!busy && (
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 3v8" />
+                <path d="M6.6 6.8a8 8 0 1 0 10.8 0" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
 
       {!active && (

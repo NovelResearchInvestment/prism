@@ -104,6 +104,8 @@ export interface ProcessInfo {
 
 export interface Outbounds {
   groups: string[];
+  /** Enabled chains that work with this profile. */
+  chains: string[];
   proxies: string[];
 }
 

@@ -3,6 +3,7 @@ import { api, type Mode, type ProxyItem } from "./api";
 import { useApp } from "./state";
 import type { PageKey } from "./App";
 import { t } from "./i18n";
+import { isChainPart } from "./pages/Proxies";
 
 interface Item {
   id: string;
@@ -116,7 +117,7 @@ export default function CommandPalette({ pages, go }: { pages: readonly { key: P
       run: () => run(() => (snap.running ? api.stop() : api.start())),
     });
     // Nodes of the groups that can be switched by hand.
-    const groups = (proxies["GLOBAL"]?.all ?? Object.keys(proxies)).map((n) => proxies[n]).filter((g): g is ProxyItem => !!g?.all && g.type === "Selector" && !g.hidden);
+    const groups = (proxies["GLOBAL"]?.all ?? Object.keys(proxies)).map((n) => proxies[n]).filter((g): g is ProxyItem => !!g?.all && g.type === "Selector" && !g.hidden && !isChainPart(g.name, s.chains.map((c) => c.name)));
     if (s.mode === "global" && proxies["GLOBAL"]) groups.unshift(proxies["GLOBAL"]);
     for (const g of groups) {
       for (const n of g.all ?? []) {

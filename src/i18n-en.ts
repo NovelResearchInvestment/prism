@@ -207,18 +207,20 @@ export const EN: Record<string, string> = {
   第一跳: "First hop",
   "第 {n} 跳": "Hop {n}",
   落地: "Exit hop",
-  "还没有链路。点「添加链路」，选择流量依次经过的节点。": "No chains yet. Click “Add chain” and pick the nodes traffic goes through.",
-  "让流量依次经过多个节点，网站看到的是最后一个节点的 IP。保存后，链路会出现在第一个手动选择的代理组里，也可以作为应用分流、域名分流的出口。三种内核都支持。":
-    "Send traffic through several nodes in turn; websites see the last node's IP. A saved chain appears in the first manual group and can be an exit for app and domain rules. All three cores support it.",
+  "还没有链路。点「添加链路」，选择流量依次经过的节点或代理组。": "No chains yet. Click “Add chain” and pick the nodes or groups traffic goes through.",
+  "让流量依次经过多个节点或代理组，网站看到的是最后一跳的 IP。保存后，可以作为应用分流、域名分流的出口，也可以在全局模式下选择。三种内核都支持。":
+    "Send traffic through several nodes or groups in turn; websites see the last hop's IP. A saved chain can be an exit for app and domain rules, or be picked in global mode. All three cores support it.",
   "每多一跳，延迟通常更高，任何一个节点出问题都会让整条链路中断。走 UDP 的节点（TUIC、Hysteria2、WireGuard）要求前一跳支持 UDP。":
     "Each hop usually adds latency, and if any node fails the whole chain fails. UDP nodes (TUIC, Hysteria2, WireGuard) need a previous hop that supports UDP.",
-  "当前订阅缺少节点 {v}，这条链路不会生效": "This profile has no node {v}, so this chain is not used",
+  "当前订阅缺少 {v}，这条链路不会生效": "This profile has no {v}, so this chain is not used",
+  "这条链路不会生效，原因见日志": "This chain is not used; see the log for why",
   "名字已被订阅中的节点或代理组使用": "A node or group in the profile already has this name",
-  "至少选择两个不同的节点": "Pick at least two different nodes",
+  "至少选择两个不同的节点或代理组": "Pick at least two different nodes or groups",
   "{n} 跳": "{n} hops",
   "出口异常时拒绝：出口连不上或已从订阅中消失时，连接直接失败，不直连，也不改走其他规则。":
     "Reject on exit failure: if the exit can't connect or is gone from the profile, the connection fails instead of going direct or following other rules.",
-  "出口是代理组时不能选择；要使用这个选项，请选具体节点或链式代理。": "Not available with a group as the exit. Pick a specific node or proxy chain to use it.",
+  "出口是代理组时，组内其他节点或 DIRECT 仍可能接管；要完全锁定请选具体节点。":
+    "With a group as the exit, its other nodes or DIRECT may still take over. Pick a specific node to lock it.",
   异常时拒绝: "Reject on failure",
   "域名 / IP 分流": "Domain / IP rules",
   添加规则: "Add rule",

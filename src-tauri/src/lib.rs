@@ -994,8 +994,8 @@ async fn list_processes() -> Res<Vec<prism_core::process::ProcessInfo>> {
 
 #[tauri::command]
 fn profile_outbounds(st: State<'_, AppState>) -> Res<Value> {
-    let (groups, proxies) = core::profile_outbounds(&st.store, &st.settings()).map_err(e)?;
-    Ok(json!({ "groups": groups, "proxies": proxies }))
+    let (groups, chains, proxies) = core::profile_outbounds(&st.store, &st.settings()).map_err(e)?;
+    Ok(json!({ "groups": groups, "chains": chains, "proxies": proxies }))
 }
 
 /// 规则测试: the rule `target` hits (domain, IP or URL; optional program).
@@ -1217,7 +1217,12 @@ const SEL_SEP: char = '\u{1}';
 /// The running core's `select` groups, in the order the 代理 page shows them.
 async fn tray_groups(s: &Settings) -> Vec<TrayGroup> {
     match core::api(s, "GET", "/proxies", None).await {
-        Ok(v) => parse_tray_groups(&v, s.mode == Mode::Global),
+        Ok(v) => {
+            let mut groups = parse_tray_groups(&v, s.mode == Mode::Global);
+            // Chains and their copied groups belong to the 链式代理 page.
+            groups.retain(|g| !s.chains.iter().any(|c| g.name == c.name || g.name.starts_with(&format!("{} · ", c.name))));
+            groups
+        }
         Err(_) => Vec::new(),
     }
 }

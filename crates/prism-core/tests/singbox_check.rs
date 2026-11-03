@@ -161,13 +161,19 @@ proxies:
   - {name: exit, type: ss, server: 127.0.0.1, port: 18102, cipher: aes-128-gcm, password: pw}
 proxy-groups:
   - {name: pick, type: select, proxies: [hop, exit]}
+  - {name: via, type: select, proxies: [hop]}
+  - {name: exits, type: select, proxies: [exit]}
 rules:
   - MATCH,DIRECT
 "#;
-    let chain = [config::Chain { name: "my chain".into(), hops: vec!["hop".into(), "exit".into()] }];
+    let ch = |name: &str, hops: &[&str]| config::Chain { name: name.into(), hops: hops.iter().map(|h| h.to_string()).collect() };
+    let chain = [ch("my chain", &["hop", "exit"]), ch("group first", &["via", "exit"]), ch("group last", &["hop", "exits"]), ch("both groups", &["via", "exits"])];
     let rules = [
         UserRule { kind: "IP-CIDR".into(), value: "127.0.0.2".into(), target: "my chain".into(), resolve: false, strict: true },
         UserRule { kind: "IP-CIDR".into(), value: "127.0.0.3".into(), target: "gone".into(), resolve: false, strict: true },
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.4".into(), target: "group first".into(), resolve: false, strict: false },
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.5".into(), target: "group last".into(), resolve: false, strict: false },
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.6".into(), target: "both groups".into(), resolve: false, strict: false },
     ];
     let o = Overrides {
         mixed_port: 18103,

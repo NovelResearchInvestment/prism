@@ -561,20 +561,19 @@ pub fn add_chains(v: &mut Value, chains: &[Chain]) -> Vec<String> {
     let Some(root) = v.as_mapping_mut() else { return warnings };
     for c in chains {
         let taken = target_names(root);
-        let nodes: Vec<String> = match root.get("proxies") {
-            Some(Value::Sequence(seq)) => seq.iter().filter_map(|x| x.as_mapping().and_then(|m| s(m, "name"))).collect(),
-            _ => Vec::new(),
+        let mappings = |key: &str| -> Vec<Mapping> {
+            match root.get(key) {
+                Some(Value::Sequence(seq)) => seq.iter().filter_map(|x| x.as_mapping().cloned()).collect(),
+                _ => Vec::new(),
+            }
         };
-        if let Some(e) = c.problem(|n| nodes.iter().any(|x| x == n), |n| taken.contains(n)) {
+        let (nodes, known) = (mappings("proxies"), mappings("proxy-groups"));
+        if let Some(e) = c.problem(|n| relay_hop_of(n, &nodes, &known), |n| taken.contains(n)) {
             warnings.push(format!("chain {} skipped: {e}", c.name));
             continue;
         }
         let groups = root.entry(Value::String("proxy-groups".into())).or_insert_with(|| Value::Sequence(vec![]));
         let Value::Sequence(groups) = groups else { continue };
-        let first = groups.iter_mut().filter_map(|g| g.as_mapping_mut()).find(|m| s(m, "type").as_deref() == Some("select"));
-        if let Some(Value::Sequence(list)) = first.and_then(|m| m.get_mut("proxies")) {
-            list.push(Value::String(c.name.clone()));
-        }
         let mut g = Mapping::new();
         put(&mut g, "name", c.name.clone());
         put(&mut g, "type", "relay");
@@ -607,17 +606,24 @@ fn prepend_rules(root: &mut Mapping, mut lines: Vec<Value>) {
 }
 
 /// Current mihomo refuses `relay` groups (replaced by `dialer-proxy`), so
-/// each one becomes copies of its nodes chained with `dialer-proxy`, the
-/// last copy taking the group's name. The first hop may be a group; a relay
-/// whose later hops aren't nodes becomes a select group.
+/// each one becomes copies of its later hops chained with `dialer-proxy`, the
+/// last copy taking the group's name (see [`plan_relay`]). A relay with a
+/// later hop that can't be copied becomes a select group.
 pub fn relays_to_dialer_proxy(v: &mut Value) {
     let Some(root) = v.as_mapping_mut() else { return };
     let nodes: Vec<Mapping> = match root.get("proxies") {
         Some(Value::Sequence(seq)) => seq.iter().filter_map(|x| x.as_mapping().cloned()).collect(),
         _ => Vec::new(),
     };
+    let originals: Vec<Mapping> = match root.get("proxy-groups") {
+        Some(Value::Sequence(seq)) => seq.iter().filter_map(|x| x.as_mapping().cloned()).collect(),
+        _ => Vec::new(),
+    };
+    let named = |list: &[Mapping], n: &str| list.iter().find(|m| s(m, "name").as_deref() == Some(n)).cloned();
+    let kind = |n: &str| relay_hop_of(n, &nodes, &originals);
     let Some(Value::Sequence(groups)) = root.get_mut("proxy-groups") else { return };
     let mut copies = Vec::new();
+    let mut group_copies = Vec::new();
     groups.retain_mut(|g| {
         let Some(m) = g.as_mapping_mut() else { return true };
         if s(m, "type").as_deref() != Some("relay") {
@@ -625,31 +631,50 @@ pub fn relays_to_dialer_proxy(v: &mut Value) {
         }
         let name = s(m, "name").unwrap_or_default();
         let hops: Vec<String> = list(m, "proxies").into_iter().filter(|h| h != "DIRECT").collect();
-        let later: Option<Vec<&Mapping>> = hops.iter().skip(1).map(|h| nodes.iter().find(|n| s(n, "name").as_deref() == Some(h))).collect();
-        match later {
-            Some(later) if !later.is_empty() => {
-                let mut prev = hops[0].clone();
-                for (i, node) in later.iter().enumerate() {
-                    let mut c = (*node).clone();
-                    let cname = if i + 1 == later.len() { name.clone() } else { format!("{name} · {}", i + 1) };
-                    put(&mut c, "name", cname.clone());
-                    put(&mut c, "dialer-proxy", prev);
-                    prev = cname;
-                    copies.push(Value::Mapping(c));
+        match plan_relay(&name, &hops, &kind).filter(|plan| !plan.is_empty()) {
+            Some(plan) => {
+                for item in plan {
+                    match item {
+                        RelayCopy::Node { name, base, via } => {
+                            let Some(mut c) = named(&nodes, &base) else { continue };
+                            put(&mut c, "name", name);
+                            put(&mut c, "dialer-proxy", via);
+                            copies.push(Value::Mapping(c));
+                        }
+                        RelayCopy::Group { name, base, members } => {
+                            let Some(mut c) = named(&originals, &base) else { continue };
+                            put(&mut c, "name", name);
+                            put(&mut c, "proxies", Value::Sequence(members.into_iter().map(Value::String).collect()));
+                            group_copies.push(Value::Mapping(c));
+                        }
+                    }
                 }
                 false
             }
-            _ => {
+            None => {
                 put(m, "type", "select");
                 true
             }
         }
     });
+    groups.extend(group_copies);
     if copies.is_empty() {
         return;
     }
     if let Some(Value::Sequence(seq)) = root.get_mut("proxies") {
         seq.extend(copies);
+    }
+}
+
+fn relay_hop_of(name: &str, nodes: &[Mapping], groups: &[Mapping]) -> RelayHop {
+    if nodes.iter().any(|m| s(m, "name").as_deref() == Some(name)) {
+        return RelayHop::Node;
+    }
+    match groups.iter().find(|m| s(m, "name").as_deref() == Some(name)) {
+        Some(g) if s(g, "type").as_deref() != Some("relay") && g.get("use").is_none() && g.get("include-all").is_none() && g.get("include-all-proxies").is_none() => {
+            RelayHop::Group(list(g, "proxies"))
+        }
+        _ => RelayHop::Unknown,
     }
 }
 
@@ -762,13 +787,25 @@ rules: ["MATCH,pick"]
         let p = parse(&v).unwrap();
         let relay = p.groups.iter().find(|g| g.name == "c").unwrap();
         assert_eq!((relay.kind, relay.proxies.as_slice()), (GroupKind::Relay, ["a".to_string(), "b".to_string()].as_slice()));
-        assert!(p.groups.iter().find(|g| g.name == "pick").unwrap().proxies.contains(&"c".to_string()));
-        assert!(!p.groups.iter().find(|g| g.name == "auto").unwrap().proxies.contains(&"c".to_string()));
+        assert!(!p.groups.iter().any(|g| g.name != "c" && g.proxies.contains(&"c".to_string())), "a chain is no group's member");
 
         let mut q = crate::config::parse_any(doc).unwrap();
         assert_eq!(q.add_chains(&[chains("c", &["a", "b"]), chains("one", &["a"])]).len(), 1);
         assert_eq!(q.groups.last().unwrap().name, "c");
-        assert!(q.groups.iter().find(|g| g.name == "pick").unwrap().proxies.contains(&"c".to_string()));
+
+        // Groups as hops, in any position; one with unknown members can't be a later hop.
+        let doc2 = format!("{doc}\n");
+        let mut w: Value = serde_yaml::from_str(&doc2).unwrap();
+        w["proxy-groups"].as_sequence_mut().unwrap().push(serde_yaml::from_str("{name: prov, type: select, use: [x]}").unwrap());
+        let warned = add_chains(&mut w, &[chains("first", &["pick", "b"]), chains("last", &["a", "auto"]), chains("late", &["a", "prov"]), chains("early", &["prov", "a"])]);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("late"), "{warned:?}");
+        relays_to_dialer_proxy(&mut w);
+        let r = parse(&w).unwrap();
+        assert_eq!(r.proxies.iter().find(|x| x.name == "first").unwrap().dialer_proxy.as_deref(), Some("pick"));
+        let last = r.groups.iter().find(|g| g.name == "last").unwrap();
+        assert_eq!((last.kind, last.proxies.clone()), (GroupKind::UrlTest, vec!["last · a".to_string(), "last · b".to_string()]));
+        assert_eq!(r.proxies.iter().find(|x| x.name == "last · b").unwrap().dialer_proxy.as_deref(), Some("a"));
     }
 
     #[test]
@@ -904,7 +941,11 @@ rules: ['MATCH,chain']
         .unwrap();
         relays_to_dialer_proxy(&mut v);
         let p = parse(&v).unwrap();
+        // relay [a, PROXY]: a copy of the group over copies of its nodes, all through a.
         assert_eq!(p.groups.iter().map(|g| (g.name.as_str(), g.kind)).collect::<Vec<_>>(), [("PROXY", GroupKind::Select), ("odd", GroupKind::Select)]);
+        let odd = p.groups.iter().find(|g| g.name == "odd").unwrap();
+        assert_eq!(odd.proxies, ["odd · a", "odd · b"]);
+        assert_eq!(p.proxies.iter().find(|x| x.name == "odd · b").unwrap().dialer_proxy.as_deref(), Some("a"));
         let hop = |n: &str| p.proxies.iter().find(|x| x.name == n).unwrap();
         assert_eq!((hop("chain · 1").server.as_str(), hop("chain · 1").dialer_proxy.as_deref()), ("1.1.1.1", Some("PROXY")));
         assert_eq!((hop("chain").server.as_str(), hop("chain").dialer_proxy.as_deref()), ("2.2.2.2", Some("chain · 1")));
