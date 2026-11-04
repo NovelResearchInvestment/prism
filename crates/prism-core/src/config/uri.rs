@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn sbm_anytls_base64() {
-        let list = "anytls://p%40ss@jp.example.com:8443/?sni=jp.example.com#%E4%B8%9C%E4%BA%AC\n\
+        let list = "anytls://p%40ss@jp.example.com:8443/?sni=jp.example.com&fp=chrome#%E4%B8%9C%E4%BA%AC\n\
                     ss://YWVzLTI1Ni1nY206c2VjcmV0@1.2.3.4:8388#ss1\n\
                     vless://0b6a0b4e-0000-4000-8000-000000000000@v.example.com:443?security=tls&sni=v.example.com&type=ws&path=%2Fray#v\n\
                     hysteria2://pw@h.example.com:443?sni=h.example.com&insecure=1#h";
@@ -289,6 +289,7 @@ mod tests {
         assert_eq!(a.name, "东京");
         assert_eq!(a.password.as_deref(), Some("p@ss"));
         assert_eq!(a.port, 8443);
+        assert_eq!(a.fingerprint.as_deref(), Some("chrome"));
         assert_eq!(nodes[1].cipher.as_deref(), Some("aes-256-gcm"));
         assert_eq!(nodes[2].ws_path.as_deref(), Some("/ray"));
         assert!(nodes[3].skip_cert_verify);

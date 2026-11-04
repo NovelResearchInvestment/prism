@@ -70,6 +70,9 @@ smoltcp = { version = "0.12", default-features = false, features = ["std", "log"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+rcgen = "0.13"
+
 [target.'cfg(windows)'.dependencies]
 wintun = "0.5"
 windows-sys = { version = "0.59", features = ["Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem"] }
