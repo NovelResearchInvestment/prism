@@ -540,6 +540,37 @@ pub fn add_user_rules(v: &mut Value, rules: &[UserRule]) -> Vec<String> {
     warnings
 }
 
+/// Real IP domains: left out of fake-ip, resolved by their own server if they
+/// name one (first in `nameserver-policy`, so it wins). Without a DNS section
+/// the system resolver answers anyway, with real addresses.
+pub fn add_real_ip_dns(v: &mut Value, domains: &[RealIpDomain]) {
+    let Some(Value::Mapping(dns)) = v.as_mapping_mut().and_then(|root| root.get_mut("dns")) else { return };
+    let filter = dns.entry(Value::String("fake-ip-filter".into())).or_insert_with(|| Value::Sequence(vec![]));
+    if let Value::Sequence(list) = filter {
+        for d in domains {
+            let p = Value::String(d.pattern());
+            if !list.contains(&p) {
+                list.push(p);
+            }
+        }
+    }
+    let mut policy = Mapping::new();
+    for d in domains.iter().filter(|d| !d.dns.trim().is_empty()) {
+        put(&mut policy, &d.pattern(), d.dns.trim());
+    }
+    if policy.is_empty() {
+        return;
+    }
+    if let Some(Value::Mapping(old)) = dns.get("nameserver-policy") {
+        for (k, val) in old {
+            if !policy.contains_key(k) {
+                policy.insert(k.clone(), val.clone());
+            }
+        }
+    }
+    put(dns, "nameserver-policy", Value::Mapping(policy));
+}
+
 /// mihomo downloads a missing geodata file itself: from the custom sources
 /// too, when set. Other sources in the profile stay.
 pub fn set_geo_urls(v: &mut Value, geosite: &str, geoip: &str) {
@@ -755,6 +786,33 @@ mod tests {
         assert!(w[0].contains("rejecting"), "{w:?}");
         let rules: Vec<&str> = v["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
         assert_eq!(rules, ["PROCESS-NAME,x.exe,REJECT", "DOMAIN,a.test,REJECT", "MATCH,DIRECT"]);
+    }
+
+    #[test]
+    fn real_ip_domains_skip_fake_ip_and_use_their_server() {
+        let mut v: Value = serde_yaml::from_str("dns: {enable: true, fake-ip-filter: ['*.lan'], nameserver-policy: {'+.a.test': 1.1.1.1, '+.corp.test': 2.2.2.2}}\n").unwrap();
+        let d = |domain: &str, subdomains, dns: &str| RealIpDomain { domain: domain.into(), subdomains, dns: dns.into() };
+        add_real_ip_dns(&mut v, &[d("corp.test", true, "10.1.1.1"), d("one.test", false, "")]);
+        let list = |k: &str| v["dns"][k].as_sequence().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(list("fake-ip-filter"), ["*.lan", "+.corp.test", "one.test"]);
+        let policy = v["dns"]["nameserver-policy"].as_mapping().unwrap();
+        let keys: Vec<&str> = policy.keys().map(|k| k.as_str().unwrap()).collect();
+        assert_eq!(keys, ["+.corp.test", "+.a.test"], "ours first, the same key not repeated");
+        assert_eq!(v["dns"]["nameserver-policy"]["+.corp.test"].as_str(), Some("10.1.1.1"));
+
+        let mut none: Value = serde_yaml::from_str("mode: rule\n").unwrap();
+        add_real_ip_dns(&mut none, &[d("corp.test", true, "10.1.1.1")]);
+        assert!(none.get("dns").is_none());
+    }
+
+    #[test]
+    fn dns_server_addresses() {
+        for ok in ["10.1.1.1", "10.1.1.1:5353", "tcp://10.1.1.1", "https://dns.test/dns-query", "fd00::1"] {
+            assert!(valid_dns_server(ok), "{ok}");
+        }
+        for bad in ["", "dns.test", "https://a#PROXY", "ftp://a", "1.1.1.1 2.2.2.2", "udp://"] {
+            assert!(!valid_dns_server(bad), "{bad}");
+        }
     }
 
     #[test]

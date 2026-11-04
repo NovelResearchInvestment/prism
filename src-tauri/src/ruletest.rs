@@ -47,7 +47,7 @@ pub fn parse_target(input: &str) -> Result<Address> {
 }
 
 /// Not a server's address: the fake-ip range a core's DNS hands out.
-fn is_fake(ip: IpAddr) -> bool {
+pub fn is_fake(ip: IpAddr) -> bool {
     matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 198 && (v4.octets()[1] & 0xfe) == 18)
 }
 

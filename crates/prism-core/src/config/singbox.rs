@@ -642,6 +642,51 @@ fn clash_api(o: &Overrides) -> Value {
     })
 }
 
+/// Real IP domains get DNS rules of their own in front of the fake-ip one,
+/// answered by the server they name or else the final one. Those with their
+/// own server also get a route rule: connections by name resolve through
+/// `default_domain_resolver`, not the DNS rules. Returns warnings.
+pub fn add_real_ip_dns(v: &mut Value, domains: &[RealIpDomain]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(dns) = v.get_mut("dns").and_then(|d| d.as_object_mut()) else { return warnings };
+    let servers: Vec<Value> = dns.get("servers").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+    let first = servers.first().and_then(|s| st(s, "tag")).unwrap_or_default();
+    let final_tag = dns.get("final").and_then(|f| f.as_str()).map(String::from).unwrap_or(first);
+    let mut added = Vec::new();
+    let mut rules = Vec::new();
+    let mut resolves = Vec::new();
+    for (i, d) in domains.iter().enumerate() {
+        let tag = format!("real-ip-{i}");
+        let field = if d.subdomains { "domain_suffix" } else { "domain" };
+        let server = match dns_server(&d.dns, &tag, &[]) {
+            Some(s) if !d.dns.trim().is_empty() => {
+                added.push(s);
+                resolves.push(json!({ field: [d.domain], "action": "resolve", "server": tag }));
+                tag
+            }
+            _ => {
+                if !d.dns.trim().is_empty() {
+                    warnings.push(format!("{}: unusable DNS server {}", d.domain, d.dns));
+                }
+                final_tag.clone()
+            }
+        };
+        rules.push(json!({ field: [d.domain], "server": server }));
+    }
+    if let Some(list) = dns.entry("servers").or_insert_with(|| json!([])).as_array_mut() {
+        list.extend(added);
+    }
+    if let Some(list) = dns.entry("rules").or_insert_with(|| json!([])).as_array_mut() {
+        rules.append(list);
+        *list = rules;
+    }
+    if let Some(list) = v.pointer_mut("/route/rules").and_then(|r| r.as_array_mut()) {
+        let at = list.iter().take_while(|x| matches!(x.get("action").and_then(|a| a.as_str()), Some("sniff" | "hijack-dns"))).count();
+        list.splice(at..at, resolves);
+    }
+    warnings
+}
+
 /// Puts per-application rules (`process_name` / `process_path`) in front of
 /// the routing rules, after the sniff / hijack-dns / clash_mode rules so the
 /// global and direct modes still win. Returns warnings for skipped rules.
@@ -1045,6 +1090,22 @@ mod tests {
         let rules = &sb["route"]["rules"];
         assert_eq!(rules[0], json!({ "process_name": ["x.exe"], "action": "reject" }));
         assert_eq!(rules[1], json!({ "domain": ["a.test"], "action": "reject" }));
+    }
+
+    #[test]
+    fn real_ip_rules_come_before_fake_ip() {
+        let mut sb = json!({
+            "dns": { "servers": [{ "type": "udp", "tag": "dns-0", "server": "1.1.1.1" }], "final": "dns-0", "rules": [{ "query_type": ["A"], "server": "fakeip" }] },
+            "route": { "rules": [{ "action": "sniff" }, { "clash_mode": "Direct", "outbound": "DIRECT" }] },
+        });
+        let d = |domain: &str, subdomains, dns: &str| RealIpDomain { domain: domain.into(), subdomains, dns: dns.into() };
+        assert!(add_real_ip_dns(&mut sb, &[d("corp.test", true, "10.1.1.1"), d("one.test", false, "")]).is_empty());
+        assert_eq!(sb["dns"]["rules"][0], json!({ "domain_suffix": ["corp.test"], "server": "real-ip-0" }));
+        assert_eq!(sb["dns"]["rules"][1], json!({ "domain": ["one.test"], "server": "dns-0" }));
+        assert_eq!(sb["dns"]["rules"][2]["server"], "fakeip");
+        assert_eq!(sb["dns"]["servers"][1]["server"], "10.1.1.1");
+        assert_eq!(sb["route"]["rules"][1], json!({ "domain_suffix": ["corp.test"], "action": "resolve", "server": "real-ip-0" }));
+        assert_eq!(sb["route"]["rules"].as_array().unwrap().len(), 3, "no server of its own, no route rule");
     }
 
     #[test]

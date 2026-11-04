@@ -35,6 +35,7 @@ export interface Settings {
   app_rules: AppRule[];
   route_rules: RouteRule[];
   chains: ChainRule[];
+  real_ip_rules: RealIpRule[];
   geosite_url: string;
   geoip_url: string;
   geosite_srs_url: string;
@@ -71,6 +72,22 @@ export interface AppRule {
   target: string;
   /** Reject the connections when the target is gone from the profile. */
   strict: boolean;
+}
+
+/** 真实 IP: a domain or network that keeps its real address and goes direct. */
+export interface RealIpRule {
+  id: string;
+  enabled: boolean;
+  kind: "domain" | "network";
+  value: string;
+  subdomains: boolean;
+  /** The server that answers for a domain; empty: the profile's. */
+  dns: string;
+}
+
+export interface RealIpResult {
+  ips: string[];
+  fake: boolean;
 }
 
 /** 链式代理: nodes traffic goes through in order. */
@@ -300,6 +317,8 @@ export const api = {
   setMergeProfiles: (ids: string[]) => invoke<void>("set_merge_profiles", { ids }),
   setRouteRules: (rules: RouteRule[]) => invoke<void>("set_route_rules", { rules }),
   setChains: (chains: ChainRule[]) => invoke<void>("set_chains", { chains }),
+  setRealIpRules: (rules: RealIpRule[]) => invoke<void>("set_real_ip_rules", { rules }),
+  testRealIp: (host: string) => invoke<RealIpResult>("test_real_ip", { host }),
   setKillSwitch: (enable: boolean) => invoke<void>("set_kill_switch", { enable }),
   releaseKillSwitch: () => invoke<void>("release_kill_switch"),
   geoLocate: (hosts: string[]) => invoke<Record<string, string | null>>("geo_locate", { hosts }),

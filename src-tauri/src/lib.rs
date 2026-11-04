@@ -1071,6 +1071,36 @@ async fn release_kill_switch(app: AppHandle, st: State<'_, AppState>) -> Res<()>
     Ok(())
 }
 
+/// Saves the real IP list, cleaned up (a pasted URL becomes its host) and
+/// refusing malformed entries, then reloads a running core.
+#[tauri::command]
+async fn set_real_ip_rules(app: AppHandle, st: State<'_, AppState>, mut rules: Vec<store::RealIpRule>) -> Res<()> {
+    for r in &mut rules {
+        let rc = r.user_rule().to_rule().map_err(|err| format!("「{}」无效：{err}", r.value))?;
+        r.value = rc.payload;
+        r.dns = r.dns.trim().to_string();
+        if !r.dns.is_empty() && !prism_core::config::valid_dns_server(&r.dns) {
+            return Err(format!("DNS 地址「{}」无效", r.dns));
+        }
+    }
+    st.update(|s| s.real_ip_rules = rules)?;
+    reload_core(&app, &st).await
+}
+
+/// What the system resolver answers for `host` now, and whether it is a fake-ip.
+#[tauri::command]
+async fn test_real_ip(host: String) -> Res<Value> {
+    let host = host.trim().to_string();
+    let found = tokio::time::timeout(Duration::from_secs(8), tokio::net::lookup_host((host.as_str(), 0)))
+        .await
+        .map_err(|_| "超时".to_string())?
+        .map_err(e)?;
+    let ips: Vec<std::net::IpAddr> = found.map(|a| a.ip()).collect();
+    let fake = ips.iter().any(|ip| ruletest::is_fake(*ip));
+  
+    Ok(json!({ "ips": ips, "fake": fake }))
+}
+
 /// Saves the chains and reloads a running core.
 #[tauri::command]
 async fn set_chains(app: AppHandle, st: State<'_, AppState>, chains: Vec<store::ChainRule>) -> Res<()> {
@@ -1570,6 +1600,8 @@ pub fn run() {
             set_app_rules,
             set_route_rules,
             set_chains,
+            set_real_ip_rules,
+            test_real_ip,
             set_kill_switch,
             release_kill_switch,
             set_profile_interval,

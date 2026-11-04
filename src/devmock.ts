@@ -2,6 +2,8 @@
 // browser (no Tauri backend), answer the app's commands with sample data so
 // pages can be checked visually. Never included in production builds.
 
+import type { RealIpRule } from "./api";
+
 type Handler = (args: Record<string, unknown>) => unknown;
 
 export function installDevMock() {
@@ -38,6 +40,10 @@ export function installDevMock() {
       { id: "2", enabled: true, by_path: true, value: "D:\\Games\\Steam\\steam.exe", target: "DIRECT" },
       { id: "3", enabled: false, by_path: false, value: "updater.exe", target: "REJECT" },
     ],
+    real_ip_rules: [
+      { id: "r1", enabled: true, kind: "domain", value: "corp.example", subdomains: true, dns: "10.1.1.1" },
+      { id: "r2", enabled: true, kind: "network", value: "10.0.0.0/8", subdomains: false, dns: "" },
+    ] as RealIpRule[],
     geosite_url: "",
     geoip_url: "",
     geosite_srs_url: "",
@@ -255,6 +261,10 @@ export function installDevMock() {
       settings.kill_switch = !!a.enable;
     },
     release_kill_switch: () => {},
+    set_real_ip_rules: (a) => {
+      settings.real_ip_rules = a.rules as RealIpRule[];
+    },
+    test_real_ip: (a) => (String(a.host).endsWith("corp.example") ? { ips: ["10.2.3.4"], fake: false } : { ips: ["198.18.0.9"], fake: true }),
     set_chains: (a) => {
       settings.chains = a.chains as typeof settings.chains;
     },

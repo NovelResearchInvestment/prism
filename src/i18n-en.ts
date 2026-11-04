@@ -188,6 +188,29 @@ export const EN: Record<string, string> = {
   "请在弹出的窗口中输入 Mac 的登录密码…": "Enter your Mac login password in the window that appears…",
   域名分流: "Domain rules",
   链式代理: "Proxy chains",
+  "真实 IP": "Real IP",
+  "编辑真实 IP 规则": "Edit real IP rule",
+  "添加真实 IP 规则": "Add real IP rule",
+  包含所有子域名: "Include all subdomains",
+  仅这个域名: "This domain only",
+  "解析用的 DNS（可选）": "DNS server (optional)",
+  "只有公司 DNS 才能解析的内网域名，请填写公司 DNS。留空时用订阅的 DNS 解析。这个域名的连接会直连。":
+    "For internal names only your company's DNS knows, enter that server. Left empty, the profile's DNS answers. Connections to this domain go direct.",
+  "这个网段的连接会直连，不走代理。按 IP 访问时不经过 DNS，不需要其他设置。":
+    "Connections to this network go direct, not through a proxy. Access by IP doesn't involve DNS, so nothing else is needed.",
+  "DNS 地址格式不对，可以写 10.1.1.1、tcp://10.1.1.1 或 https://dns.example/dns-query。":
+    "Invalid DNS address. Use 10.1.1.1, tcp://10.1.1.1 or https://dns.example/dns-query.",
+  "让公司内网等地址拿到真实 IP 并直连：域名不再返回 198.18.x.x 这样的假 IP，还可以指定用公司 DNS 解析。优先于应用分流和域名分流；三种内核都支持，换订阅也保留。":
+    "Give internal addresses their real IP and send them direct: domains no longer get a fake IP like 198.18.x.x, and can be resolved by your company's DNS. Takes priority over app and domain rules. All three cores support it, and it stays when you switch profiles.",
+  "当前不是规则模式：真实 IP 的解析设置仍然生效，但直连规则要在规则模式下才起作用。":
+    "Not in rule mode: name resolution still applies, but the direct rules only work in rule mode.",
+  "输入域名，测试这台电脑现在解析到什么": "Enter a domain to see what this computer resolves it to now",
+  "解析失败：{e}": "Lookup failed: {e}",
+  "拿到的是假 IP：{ips}。这个域名还不在下面的规则里，或者规则还没生效。": "Got a fake IP: {ips}. This domain isn't in the rules below, or they haven't taken effect yet.",
+  "拿到的是真实 IP：{ips}": "Got the real IP: {ips}",
+  "TUN 模式未开启，这里看到的是系统 DNS 的结果，不经过内核。": "TUN mode is off, so this is the system DNS's answer, without the core.",
+  "还没有规则。点「添加规则」，填写公司内网的域名或网段。": "No rules yet. Click “Add rule” and enter your company's internal domains or networks.",
+  "DNS：{v}": "DNS: {v}",
   断网保护: "Kill switch",
   "开启 TUN 时，只允许流量经 TUN、本机和局域网通过。内核崩溃后继续拦截，流量不会变成直连。": "With TUN on, traffic may only pass through the TUN, this computer and the local network. It stays blocked if the core crashes, so traffic never goes direct.",
   "内核崩溃后，直到重启内核或解除前都上不了网。不走 TUN 的远程控制、其他 VPN 也会被拦截。退出 Prism、停止内核或重启电脑都会解除。": "After a core crash you stay offline until you restart the core or release the block. Remote-control tools and other VPNs that bypass the TUN are blocked too. Quitting Prism, stopping the core or rebooting lifts it.",

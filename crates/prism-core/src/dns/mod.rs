@@ -323,10 +323,15 @@ impl Resolver {
         if self.ipv6 {
             qtypes.push(wire::TYPE_AAAA);
         }
+        // A policy that goes straight to its servers applies here too: an
+        // internal name may be known to its own server only.
+        let (policy, tag) = self.servers_for(&name);
+        let use_policy = tag != MAIN && !policy.is_empty() && policy.iter().all(|u| u.is_direct());
         let mut last = None;
         for qt in qtypes {
             let q = wire::query(rand::random(), &name, qt);
-            match self.exchange_main(&self.lookup_servers.clone(), LOOKUP, &name, qt, &q).await {
+            let res = if use_policy { self.exchange(&policy, tag, &name, qt, &q).await } else { self.exchange_main(&self.lookup_servers.clone(), LOOKUP, &name, qt, &q).await };
+            match res {
                 Ok(r) => {
                     if let Some((ips, _)) = wire::answers(&r) {
                         out.extend(ips.into_iter().map(|(ip, _)| ip));

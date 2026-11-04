@@ -11,6 +11,7 @@ import SettingsPage from "./pages/Settings";
 import Apps from "./pages/Apps";
 import Routes from "./pages/Routes";
 import Chains from "./pages/Chains";
+import RealIp from "./pages/RealIp";
 import ImportDialog from "./ImportDialog";
 import CommandPalette, { PALETTE_KEY } from "./CommandPalette";
 import { setLang, t } from "./i18n";
@@ -24,6 +25,7 @@ const PAGES = [
   { key: "apps", label: "应用分流", icon: "⊞", el: Apps },
   { key: "routes", label: "域名分流", icon: "◈", el: Routes },
   { key: "chains", label: "链式代理", icon: "⋈", el: Chains },
+  { key: "realip", label: "真实 IP", icon: "◇", el: RealIp },
   { key: "logs", label: "日志", icon: "▤", el: Logs },
   { key: "settings", label: "设置", icon: "⚙", el: SettingsPage },
 ] as const;

@@ -145,6 +145,68 @@ fn generated_singbox_config_passes_check() {
     }
 }
 
+/// Opt-in: writes the configs the GUI generates for real IP rules, for the
+/// interop script: a company DNS on 127.0.0.1:18201, everything else to a
+/// dead node, so only the rules can reach the target.
+///   PRISM_REAL_IP_OUT=dir cargo test -p prism-core --test singbox_check real_ip_configs
+#[test]
+fn real_ip_configs() {
+    let Ok(dir) = std::env::var("PRISM_REAL_IP_OUT") else {
+        eprintln!("PRISM_REAL_IP_OUT not set, skipping");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let raw = r#"
+proxies:
+  - {name: dead, type: ss, server: 127.0.0.1, port: 1, cipher: aes-128-gcm, password: pw}
+proxy-groups:
+  - {name: pick, type: select, proxies: [dead]}
+dns:
+  enable: true
+  listen: 127.0.0.1:18202
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver: [127.0.0.1:18201]
+  nameserver: ['udp://127.0.0.1:18203']
+rules:
+  - MATCH,pick
+"#;
+    let domains = [config::RealIpDomain { domain: "corp.test".into(), subdomains: true, dns: "udp://127.0.0.1:18201".into() }];
+    let rules = [
+        UserRule { kind: "DOMAIN-SUFFIX".into(), value: "corp.test".into(), target: "DIRECT".into(), resolve: false, strict: false },
+        UserRule { kind: "IP-CIDR".into(), value: "127.0.0.8/32".into(), target: "DIRECT".into(), resolve: false, strict: false },
+    ];
+    let o = Overrides {
+        mixed_port: 18204,
+        controller: "127.0.0.1:18205".into(),
+        secret: "s".into(),
+        mode: Mode::Rule,
+        allow_lan: false,
+        log_level: "info".into(),
+        tun: false,
+        unified_delay: true,
+    };
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    clash::apply_overrides(&mut doc, &o);
+    assert!(clash::add_user_rules(&mut doc, &rules).is_empty());
+    clash::add_real_ip_dns(&mut doc, &domains);
+    std::fs::write(dir.join("realip.yaml"), serde_yaml::to_string(&doc).unwrap()).unwrap();
+
+    // emit uses the profile's DNS with TUN only; TUN needs an administrator,
+    // so this takes its DNS section from a TUN build and a plain inbound.
+    let p = config::parse_any(raw).unwrap();
+    let mut with_tun = o.clone();
+    with_tun.tun = true;
+    let mut sb = singbox::emit(&p, &o);
+    sb["dns"] = singbox::emit(&p, &with_tun)["dns"].clone();
+    singbox::apply_overrides(&mut sb, &o);
+    assert!(singbox::add_user_rules(&mut sb, &rules).is_empty());
+    assert!(singbox::add_real_ip_dns(&mut sb, &domains).is_empty());
+    sb["inbounds"].as_array_mut().unwrap().push(serde_json::json!({ "type": "direct", "tag": "dns-in", "listen": "127.0.0.1", "listen_port": 18202, "network": "udp" }));
+    sb["route"]["rules"].as_array_mut().unwrap().insert(0, serde_json::json!({ "inbound": ["dns-in"], "action": "hijack-dns" }));
+    std::fs::write(dir.join("realip.json"), serde_json::to_string_pretty(&sb).unwrap()).unwrap();
+}
+
 /// Opt-in: writes the configs the GUI generates for a chain (and a strict rule
 /// whose target is gone), one per core, for the interop script.
 ///   PRISM_CHAIN_OUT=dir cargo test -p prism-core --test singbox_check chain_configs

@@ -417,6 +417,38 @@ pub struct UserRule {
     pub strict: bool,
 }
 
+/// A domain that must resolve to its real address (no fake-ip), optionally
+/// through a server of its own.
+#[derive(Clone, Debug)]
+pub struct RealIpDomain {
+    pub domain: String,
+    pub subdomains: bool,
+    /// Empty: the profile's servers.
+    pub dns: String,
+}
+
+impl RealIpDomain {
+    pub fn pattern(&self) -> String {
+        if self.subdomains {
+            format!("+.{}", self.domain)
+        } else {
+            self.domain.clone()
+        }
+    }
+}
+
+/// A DNS server a real IP rule may name: reached directly, so no `#proxy`.
+pub fn valid_dns_server(spec: &str) -> bool {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.contains(|c: char| c.is_whitespace() || c == '#') {
+        return false;
+    }
+    match spec.split_once("://") {
+        Some((scheme, rest)) => ["udp", "tcp", "tls", "https", "quic", "h3"].contains(&scheme) && !rest.is_empty(),
+        None => spec.parse::<std::net::IpAddr>().is_ok() || spec.parse::<std::net::SocketAddr>().is_ok(),
+    }
+}
+
 /// What a later relay hop can be turned into.
 pub enum RelayHop {
     Node,

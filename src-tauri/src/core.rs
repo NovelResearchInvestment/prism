@@ -150,6 +150,23 @@ fn user_rules(s: &Settings) -> Vec<config::UserRule> {
         .collect()
 }
 
+/// Direct rules of the real IP list; they go in last, so they end up first.
+fn real_ip_rules(s: &Settings) -> Vec<config::UserRule> {
+    s.real_ip_rules.iter().filter(|r| r.enabled).map(|r| r.user_rule()).collect()
+}
+
+fn real_ip_domains(s: &Settings) -> Vec<config::RealIpDomain> {
+    s.real_ip_rules
+        .iter()
+        .filter(|r| r.enabled && r.kind != "network")
+        .map(|r| config::RealIpDomain { domain: r.value.clone(), subdomains: r.subdomains, dns: r.dns.clone() })
+        .collect()
+}
+
+fn real_ip_warnings(w: Vec<String>) -> Vec<String> {
+    w.into_iter().map(|w| format!("真实 IP: {w}")).collect()
+}
+
 fn chains(s: &Settings) -> Vec<config::Chain> {
     s.chains.iter().filter(|c| c.enabled).map(|c| config::Chain { name: c.name.clone(), hops: c.hops.clone() }).collect()
 }
@@ -188,6 +205,8 @@ fn clash_doc(store: &Store, s: &Settings) -> Result<(serde_yaml::Value, Vec<Stri
     warnings.extend(chain_warnings(clash::add_chains(&mut doc, &chains(s))));
     warnings.extend(route_warnings(clash::add_user_rules(&mut doc, &user_rules(s))));
     warnings.extend(app_warnings(clash::add_app_rules(&mut doc, &app_routes(s))));
+    warnings.extend(real_ip_warnings(clash::add_user_rules(&mut doc, &real_ip_rules(s))));
+    clash::add_real_ip_dns(&mut doc, &real_ip_domains(s));
     Ok((doc, warnings))
 }
 
@@ -215,6 +234,8 @@ pub fn write_runtime_config(store: &Store, s: &Settings) -> Result<RuntimeConfig
         CoreKind::Singbox => {
             let (mut doc, mut warnings) = singbox_config(store, s)?;
             warnings.extend(app_warnings(singbox::add_app_rules(&mut doc, &app_routes(s))));
+            warnings.extend(real_ip_warnings(singbox::add_user_rules(&mut doc, &real_ip_rules(s))));
+            warnings.extend(real_ip_warnings(singbox::add_real_ip_dns(&mut doc, &real_ip_domains(s))));
             // sing-box exits if a remote rule-set can't be fetched at startup,
             // so it only ever gets the files the app downloaded.
             warnings.extend(

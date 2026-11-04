@@ -57,6 +57,8 @@ pub struct Settings {
     pub route_rules: Vec<RouteRule>,
     /// Chains of nodes (链式代理), added to the profile as relay groups.
     pub chains: Vec<ChainRule>,
+    /// Names and networks that resolve to real addresses and go direct (真实 IP).
+    pub real_ip_rules: Vec<RealIpRule>,
     /// Custom sources tried before the built-in ones; empty: built-in only.
     /// `geosite.dat` / `geoip.dat`, for Prism and mihomo.
     pub geosite_url: String,
@@ -101,6 +103,7 @@ impl Default for Settings {
             app_rules: Vec::new(),
             route_rules: Vec::new(),
             chains: Vec::new(),
+            real_ip_rules: Vec::new(),
             geosite_url: String::new(),
             geoip_url: String::new(),
             geosite_srs_url: String::new(),
@@ -152,6 +155,32 @@ pub struct RouteRule {
     pub resolve: bool,
     /// Reject the connections when the target is gone from the profile.
     pub strict: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RealIpRule {
+    pub id: String,
+    pub enabled: bool,
+    /// `domain` or `network`.
+    pub kind: String,
+    pub value: String,
+    /// Domains: also every subdomain.
+    pub subdomains: bool,
+    /// Domains: the server that answers for them; empty: the profile's.
+    pub dns: String,
+}
+
+impl RealIpRule {
+    /// The direct rule this makes.
+    pub fn user_rule(&self) -> prism_core::config::UserRule {
+        let kind = match (self.kind.as_str(), self.subdomains) {
+            ("network", _) => "IP-CIDR",
+            (_, true) => "DOMAIN-SUFFIX",
+            (_, false) => "DOMAIN",
+        };
+        prism_core::config::UserRule { kind: kind.into(), value: self.value.clone(), target: "DIRECT".into(), resolve: false, strict: false }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
