@@ -102,8 +102,13 @@ struct Snapshot {
 }
 
 /// Asks the service whatever the setting says now: a block outlives the setting.
-async fn kill_switch_blocking() -> bool {
-    cfg!(windows) && tunsvc::state() == tunsvc::State::Running && tunsvc::status().await.is_ok_and(|s| s.kill_switch && !s.running)
+/// No answer within `wait` counts as no block.
+async fn kill_switch_blocking(wait: Duration) -> bool {
+    cfg!(windows)
+        && tunsvc::state() == tunsvc::State::Running
+        && tokio::time::timeout(wait, tunsvc::status())
+            .await
+            .is_ok_and(|r| r.is_ok_and(|s| s.kill_switch && !s.running))
 }
 
 #[tauri::command]
@@ -134,7 +139,8 @@ async fn get_state(app: AppHandle, st: State<'_, AppState>) -> Res<Snapshot> {
         clash_handler: links::handler("clash"),
         tun_service: tunsvc::state(),
         platform: std::env::consts::OS,
-        kill_switch_blocking: kill_switch_blocking().await,
+        // Every snapshot asks, so a service that hangs must not hold the UI up.
+        kill_switch_blocking: kill_switch_blocking(Duration::from_secs(2)).await,
     })
 }
 
@@ -1056,7 +1062,8 @@ async fn set_kill_switch(app: AppHandle, st: State<'_, AppState>, enable: bool) 
             st.update(|s| s.kill_switch = was)?;
             return Err(err);
         }
-    } else if !enable && kill_switch_blocking().await {
+    } else if !enable && kill_switch_blocking(Duration::from_secs(60)).await {
+        // The full wait: a slow service must not leave the block up.
         tunsvc::stop().await.map_err(e)?;
     }
     Ok(())
