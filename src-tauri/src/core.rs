@@ -273,6 +273,11 @@ impl CoreManager {
     }
 
     pub async fn start(&self, app: &AppHandle, store: &Store, s: &Settings) -> Result<()> {
+        // Only the service has the kill switch: a local TUN core would run
+        // unprotected while the setting still says it is on.
+        if cfg!(windows) && s.tun && s.kill_switch && !use_service(s) {
+            bail!("断网保护已开启，但 TUN 服务没有运行，为免流量不受保护没有启动 TUN。请在设置页启动 TUN 服务，或先关闭断网保护");
+        }
         // The service replaces its core itself: stopping it first would lift
         // the kill switch for a moment.
         if use_service(s) {
