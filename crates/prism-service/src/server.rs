@@ -58,17 +58,19 @@ impl State {
     #[cfg(windows)]
     fn set_kill_switch(&self, on: bool) -> Result<()> {
         let mut ks = self.kill_switch.lock().unwrap();
-        match (on, ks.is_some()) {
-            (true, false) => {
-                let allowed: Vec<PathBuf> = CORES.iter().map(|(_, file)| self.layout.cores_dir().join(file)).filter(|p| p.exists()).collect();
-                *ks = Some(crate::killswitch::KillSwitch::enable(&allowed).context("启用断网保护失败")?);
+        let allowed = || -> Vec<PathBuf> { CORES.iter().map(|(_, file)| self.layout.cores_dir().join(file)).filter(|p| p.exists()).collect() };
+        match (on, ks.as_mut()) {
+            (true, None) => {
+                *ks = Some(crate::killswitch::KillSwitch::enable(&allowed()).context("启用断网保护失败")?);
                 push_log(&self.logs, "[service] 断网保护已启用".into());
             }
-            (false, true) => {
+            // Cores installed since the block went up must reach their nodes too.
+            (true, Some(k)) => k.allow(&allowed()).context("更新断网保护失败")?,
+            (false, Some(_)) => {
                 *ks = None;
                 push_log(&self.logs, "[service] 断网保护已解除".into());
             }
-            _ => {}
+            (false, None) => {}
         }
         Ok(())
     }
