@@ -1097,7 +1097,8 @@ async fn set_real_ip_rules(app: AppHandle, st: State<'_, AppState>, mut rules: V
 /// What the system resolver answers for `host` now, and whether it is a fake-ip.
 #[tauri::command]
 async fn test_real_ip(host: String) -> Res<Value> {
-    let host = host.trim().to_string();
+    // A pasted URL or host:port, as the list itself takes them.
+    let host = ruletest::parse_target(&host).map_err(e)?.host();
     let found = tokio::time::timeout(Duration::from_secs(8), tokio::net::lookup_host((host.as_str(), 0)))
         .await
         .map_err(|_| "超时".to_string())?
