@@ -175,11 +175,23 @@ impl State {
             }
         }
         let config = sanitize_config(kind, config)?;
-        // Before the old core goes, so a restart has no unprotected moment.
-        if kill_switch {
-            self.set_kill_switch(true)?;
-        }
+        // Before the old core goes, so a restart has no unprotected moment;
+        // a start without it doesn't keep an old block either.
+        let was_on = self.kill_switch_on();
+        self.set_kill_switch(kill_switch)?;
         self.stop_core().await;
+        let r = self.spawn_core(kind, &bin, &config, files).await;
+        // A block this start put up, with no core behind it, would only cut
+        // the machine off.
+        if r.is_err() && kill_switch && !was_on {
+            if let Err(e) = self.set_kill_switch(false) {
+                log(&self.layout, &format!("{e:#}"));
+            }
+        }
+        r
+    }
+
+    async fn spawn_core(&self, kind: &str, bin: &Path, config: &str, files: &BTreeMap<String, String>) -> Result<()> {
         let run = self.layout.run_dir();
         std::fs::create_dir_all(run.join("rule-set"))?;
         for (name, data) in files {
@@ -195,7 +207,7 @@ impl State {
         let cfg = run.join(config_file(kind));
         std::fs::write(&cfg, config)?;
 
-        let mut cmd = Command::new(&bin);
+        let mut cmd = Command::new(bin);
         if kind == "singbox" {
             cmd.arg("run").arg("-c").arg(&cfg).arg("-D").arg(&run).arg("--disable-color");
         } else {
@@ -220,9 +232,6 @@ impl State {
             });
         }
         *self.core.lock().await = Some(Running { kind: kind.into(), child });
-        if !kill_switch {
-            self.set_kill_switch(false)?;
-        }
         Ok(())
     }
 
