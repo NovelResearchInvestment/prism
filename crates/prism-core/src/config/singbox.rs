@@ -648,7 +648,14 @@ fn clash_api(o: &Overrides) -> Value {
 /// `default_domain_resolver`, not the DNS rules. Returns warnings.
 pub fn add_real_ip_dns(v: &mut Value, domains: &[RealIpDomain]) -> Vec<String> {
     let mut warnings = Vec::new();
-    let Some(dns) = v.get_mut("dns").and_then(|d| d.as_object_mut()) else { return warnings };
+    let Some(dns) = v.get_mut("dns").and_then(|d| d.as_object_mut()) else {
+        // The system resolver answers, with real addresses, but not the
+        // server the user named.
+        for d in domains.iter().filter(|d| !d.dns.trim().is_empty()) {
+            warnings.push(format!("{}: the profile has no DNS section, DNS server {} not used", d.domain, d.dns));
+        }
+        return warnings;
+    };
     let servers: Vec<Value> = dns.get("servers").and_then(|s| s.as_array()).cloned().unwrap_or_default();
     let first = servers.first().and_then(|s| st(s, "tag")).unwrap_or_default();
     let final_tag = dns.get("final").and_then(|f| f.as_str()).map(String::from).unwrap_or(first);
@@ -1103,6 +1110,14 @@ mod tests {
         let w = add_app_rules(&mut sb, &[AppRoute { by_path: false, value: "x.exe".into(), target: "wg".into(), strict: true }]);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(sb["route"]["rules"][0], json!({ "process_name": ["x.exe"], "outbound": "wg" }));
+    }
+
+    #[test]
+    fn real_ip_server_without_dns_section_warns() {
+        let mut sb = json!({ "route": { "rules": [] } });
+        let w = add_real_ip_dns(&mut sb, &[RealIpDomain { domain: "corp.test".into(), subdomains: true, dns: "10.1.1.1".into() }]);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(add_real_ip_dns(&mut sb, &[RealIpDomain { domain: "one.test".into(), subdomains: false, dns: String::new() }]).is_empty());
     }
 
     #[test]
