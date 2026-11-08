@@ -185,11 +185,16 @@ fn app_warnings(w: Vec<String>) -> Vec<String> {
 
 /// Groups, usable chains and nodes of the active profile, as exits for rules.
 pub fn profile_outbounds(store: &Store, s: &Settings) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-    let mut p = config::parse_any(&active_profile(store, s)?)?;
+    let raw = active_profile(store, s)?;
+    let mut p = config::parse_any(&raw)?;
     let own = p.groups.len();
     p.add_chains(&chains(s));
     let mut groups: Vec<String> = p.groups.into_iter().map(|g| g.name).collect();
-    let usable = groups.split_off(own);
+    let mut usable = groups.split_off(own);
+    // sing-box runs a raw sing-box profile as it is, without the chains.
+    if s.core == CoreKind::Singbox && config::detect(&raw) == Format::SingBox {
+        usable.clear();
+    }
     Ok((groups, usable, p.proxies.into_iter().map(|x| x.name).collect()))
 }
 
