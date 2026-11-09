@@ -53,11 +53,14 @@ fn set(service: &str, servers: &[String]) -> Result<()> {
 /// Points every enabled service at the public servers, saving what was
 /// there (an existing backup is kept: it holds the real originals).
 pub fn override_dns(dir: &Path) -> Result<()> {
+    override_on(dir, &crate::sysproxy::services())
+}
+
+fn override_on(dir: &Path, services: &[String]) -> Result<()> {
     let file = dir.join(FILE);
-    let services = crate::sysproxy::services();
     let mut saved: BTreeMap<String, Vec<String>> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let ours: Vec<String> = SERVERS.iter().map(|s| s.to_string()).collect();
-    for s in &services {
+    for s in services {
         let now = current(s);
         if now != ours {
             saved.entry(s.clone()).or_insert(now);
@@ -107,6 +110,39 @@ pub fn restore() {
 
 #[cfg(test)]
 mod tests {
+    /// On the real network services, with one that fails in between:
+    /// overrides the DNS servers and restores them. Changes this Mac's DNS
+    /// for a moment and puts every service back, so only with
+    /// PRISM_DNS_LIVE=1: `PRISM_DNS_LIVE=1 cargo test -p prism macdns -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_override_and_restore_on_this_mac() {
+        if std::env::var_os("PRISM_DNS_LIVE").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("prism-macdns-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = crate::sysproxy::services();
+        let before: Vec<_> = real.iter().map(|s| super::current(s)).collect();
+        let mut svcs = real.clone();
+        svcs.insert(svcs.len() / 2, "Prism No Such Service".into());
+        let ours: Vec<String> = super::SERVERS.iter().map(|s| s.to_string()).collect();
+
+        let over = super::override_on(&dir, &svcs).unwrap_err().to_string();
+        let during: Vec<_> = real.iter().map(|s| super::current(s)).collect();
+        let restore = super::restore_from(&dir).unwrap_err().to_string();
+        let after: Vec<_> = real.iter().map(|s| super::current(s)).collect();
+        let left = std::fs::read_to_string(dir.join(super::FILE)).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        *super::ACTIVE.lock().unwrap() = None;
+
+        println!("{} services; before {before:?}; after {after:?}", real.len());
+        assert!(over.contains("Prism No Such Service") && restore.contains("Prism No Such Service"), "{over} / {restore}");
+        assert!(during.iter().all(|d| *d == ours), "{during:?}");
+        assert_eq!(after, before, "every real service is back");
+        assert!(left.contains("Prism No Such Service") && real.iter().all(|s| !left.contains(&format!("\"{s}\""))), "{left}");
+    }
+
     /// Only a service that doesn't exist, so no real setting is touched.
     #[test]
     fn failed_restore_keeps_only_the_failures() {
