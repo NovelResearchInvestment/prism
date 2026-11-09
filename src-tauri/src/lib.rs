@@ -1492,15 +1492,24 @@ pub fn run() {
             tauri::async_runtime::spawn(trayspeed::run(app.handle().clone()));
 
             let menu = build_tray_menu(app.handle(), &[])?;
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Prism")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, ev| on_menu(app, ev.id().as_ref()))
+            let tray = TrayIconBuilder::with_id("main").tooltip("Prism").menu(&menu);
+            // macOS: a monochrome template icon, which the menu bar tints for
+            // its light / dark look, and the menu on a left click like other
+            // menu bar items ("Show Prism" is its first entry). Windows: the
+            // app icon, and a left click opens the window.
+            #[cfg(target_os = "macos")]
+            let tray = tray
+                .icon(tauri::image::Image::new_owned(trayspeed::menu_bar_icon(), trayspeed::MENU_SIZE as u32, trayspeed::MENU_SIZE as u32))
+                .icon_as_template(true)
+                .show_menu_on_left_click(true);
+            #[cfg(not(target_os = "macos"))]
+            let tray = tray.icon(app.default_window_icon().unwrap().clone()).show_menu_on_left_click(false);
+            tray.on_menu_event(|app, ev| on_menu(app, ev.id().as_ref()))
                 .on_tray_icon_event(|tray, ev| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
-                        show_main(tray.app_handle());
+                        if !cfg!(target_os = "macos") {
+                            show_main(tray.app_handle());
+                        }
                     }
                 })
                 .build(app)?;

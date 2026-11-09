@@ -307,7 +307,8 @@ append-proxies:
 - **开机自启**：写入 `~/Library/LaunchAgents/dev.prism.client.plist`。
 - **一键导入**：`prism://` 和 `clash://` 链接都由 Prism 打开（装有其他 Clash 客户端时，`clash://` 可能由 macOS 选定的程序打开），没有「接管 clash:// 链接」开关。
 - WebDAV 密码保存在「钥匙串」里。
-- **Dock 图标**：关闭窗口后 Prism 留在菜单栏，Dock 图标同时隐藏；从菜单栏图标、快捷键或再次打开 Prism 显示窗口时，Dock 图标重新出现。
+- **菜单栏图标**：单色棱镜图标，随菜单栏的浅色 / 深色自动变色；左键点击弹出菜单，第一项「显示主界面」打开窗口。
+- **Dock 图标**：关闭窗口后 Prism 留在菜单栏，Dock 图标同时隐藏；从菜单栏菜单、快捷键或再次打开 Prism 显示窗口时，Dock 图标重新出现。
 - **卸载**：先在设置页 **卸载** TUN 服务（如已安装），再把 Prism 从「应用程序」拖到废纸篓；数据在 `~/Library/Application Support/dev.prism.client/`。
 - **软件更新**：与 Windows 相同，在设置页检查并安装，下载后校验签名，安装完成后 Prism 自动重新打开。
 
