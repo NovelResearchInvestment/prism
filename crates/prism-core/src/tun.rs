@@ -531,5 +531,49 @@ mod mac {
             assert_eq!(&super::frame(&[0x45, 0, 0, 20])[..4], &[0, 0, 0, 2]);
             assert_eq!(&super::frame(&[0x60, 0, 0, 0])[..4], &[0, 0, 0, 30]);
         }
+
+        /// Gateway of the default route scoped to `iface` (flag I), if any.
+        fn scoped_gateway(iface: &str) -> Option<String> {
+            let out = super::run("/usr/sbin/netstat", &["-rn", "-f", "inet"]).unwrap();
+            out.lines().find_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.len() >= 4 && f[0] == "default" && f[2].contains('I') && f[3] == iface).then(|| f[1].to_string())
+            })
+        }
+
+        /// A scoped default route left with an old gateway (another network)
+        /// is pointed at the current one. Changes this Mac's routes for a
+        /// moment (only sockets bound to the interface use them) and puts
+        /// them back, so root and PRISM_ROUTE_LIVE=1 only:
+        /// `cargo test -p prism-core --lib --no-run`, then
+        /// `sudo PRISM_ROUTE_LIVE=1 <test binary> scoped_default --ignored --nocapture`.
+        #[test]
+        #[ignore]
+        fn live_scoped_default_follows_the_gateway() {
+            if std::env::var_os("PRISM_ROUTE_LIVE").is_none() {
+                return;
+            }
+            let (iface, _, gw) = super::default_interface().unwrap();
+            let gw = gw.expect("default route has an IPv4 gateway");
+            let ip: std::net::Ipv4Addr = gw.parse().unwrap();
+            let [a, b, c, d] = ip.octets();
+            let old = std::net::Ipv4Addr::new(a, b, c, if d >= 254 { d - 1 } else { d + 1 }).to_string();
+            let before = scoped_gateway(&iface);
+            let _ = super::run("/sbin/route", &["-n", "delete", "-ifscope", &iface, "default"]);
+            super::run("/sbin/route", &["-n", "add", "-ifscope", &iface, "default", &old]).unwrap();
+            let stale = scoped_gateway(&iface);
+            super::ensure_scoped_default(&iface, Some(&gw));
+            let after = scoped_gateway(&iface);
+            // Put back what was there.
+            let _ = super::run("/sbin/route", &["-n", "delete", "-ifscope", &iface, "default"]);
+            if let Some(g) = &before {
+                super::run("/sbin/route", &["-n", "add", "-ifscope", &iface, "default", g]).unwrap();
+            }
+            let restored = scoped_gateway(&iface);
+            println!("{iface}: before {before:?}, stale {stale:?}, after ensure {after:?}, restored {restored:?}");
+            assert_eq!(stale.as_deref(), Some(old.as_str()));
+            assert_eq!(after.as_deref(), Some(gw.as_str()), "the old gateway was kept");
+            assert_eq!(restored, before);
+        }
     }
 }
