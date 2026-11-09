@@ -234,9 +234,7 @@ fn on_hotkey(app: &AppHandle, action: &str) {
     if action == "toggle_window" {
         let visible = app.get_webview_window("main").map(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false));
         if visible == Some(true) {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide();
-            }
+            hide_main(app);
         } else {
             show_main(app);
         }
@@ -1224,11 +1222,29 @@ fn open_data_dir(st: State<'_, AppState>) -> Res<()> {
 // ------------------------------------------------------------------ tray
 
 fn show_main(app: &AppHandle) {
+    set_dock_icon(app, true);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/// Hides the window; Prism stays in the tray / menu bar.
+fn hide_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    set_dock_icon(app, false);
+}
+
+/// macOS: a Dock icon only while the window shows, like the taskbar
+/// button on Windows; the menu bar icon stays either way.
+fn set_dock_icon(app: &AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory });
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, visible);
 }
 
 /// A selectable group in the tray: its members with their last delay
@@ -1491,7 +1507,9 @@ pub fn run() {
 
             // The window starts hidden (tauri.conf.json) so a start with
             // Windows can stay in the tray.
-            if !hidden {
+            if hidden {
+                set_dock_icon(app.handle(), false);
+            } else {
                 show_main(app.handle());
             }
             if let Some(link) = &link {
@@ -1563,7 +1581,7 @@ pub fn run() {
             // Closing the window keeps the app in the tray.
             if let WindowEvent::CloseRequested { api, .. } = ev {
                 api.prevent_close();
-                let _ = w.hide();
+                hide_main(w.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
