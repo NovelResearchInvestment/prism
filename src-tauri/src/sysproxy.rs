@@ -133,12 +133,20 @@ mod mac {
             .map(|flag| networksetup(&[flag, service]).unwrap_or_default().lines().any(|l| l.trim() == "Enabled: Yes"))
     }
 
-    /// (enabled, "host:port") of the first service's HTTP proxy.
+    /// (enabled, "host:port") of the HTTP proxy in effect (the primary
+    /// service's, as `scutil --proxy` shows it). Read in process: the UI
+    /// asks every few seconds, and two networksetup runs each time looked
+    /// at the first service in the list, not necessarily the one in use.
     pub fn get() -> (bool, String) {
-        let Some(s) = services().into_iter().next() else { return (false, String::new()) };
-        let text = networksetup(&["-getwebproxy", &s]).unwrap_or_default();
-        let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
-        (field("Enabled:") == "Yes", format!("{}:{}", field("Server:"), field("Port:")))
+        use system_configuration::core_foundation::number::CFNumber;
+        use system_configuration::core_foundation::string::CFString;
+        use system_configuration::dynamic_store::SCDynamicStoreBuilder;
+
+        let Some(p) = SCDynamicStoreBuilder::new("prism").build().and_then(|s| s.get_proxies()) else { return (false, String::new()) };
+        let item = |k: &'static str| p.find(CFString::from_static_string(k)).map(|v| v.clone());
+        let num = |k| item(k).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64());
+        let host = item("HTTPProxy").and_then(|v| v.downcast::<CFString>()).map(|s| s.to_string()).unwrap_or_default();
+        (num("HTTPEnable") == Some(1), format!("{host}:{}", num("HTTPPort").unwrap_or(0)))
     }
 }
 
@@ -183,6 +191,7 @@ mod tests {
         let on = super::mac::set_on(&svcs, true, &addr, &bypass).unwrap_err().to_string();
         let on_time = t.elapsed();
         let on_states: Vec<_> = real.iter().map(|s| (s.clone(), super::mac::states(s))).collect();
+        let in_effect = super::mac::get();
         let t = std::time::Instant::now();
         let off = super::mac::set_on(&svcs, false, &addr, &bypass).unwrap_err().to_string();
         let off_time = t.elapsed();
@@ -190,8 +199,23 @@ mod tests {
         assert!(on.contains("Prism No Such Service") && !real.iter().any(|s| on.contains(&format!(" {s} "))), "{on}");
         assert!(off.contains("Prism No Such Service"), "{off}");
         assert!(on_states.iter().all(|(_, st)| *st == [true; 3]), "{on_states:?}");
+        assert_eq!(in_effect, (true, addr.clone()));
+        assert!(!super::mac::get().0);
         assert!(off_states.iter().all(|(_, st)| *st == [false; 3]), "{off_states:?}");
         println!("{} services on ({on_time:?}) and off again ({off_time:?}); only the missing one failed", real.len());
+    }
+
+    /// Reads what `scutil --proxy` shows.
+    #[test]
+    fn reads_the_proxy_in_effect() {
+        let out = std::process::Command::new("/usr/sbin/scutil").arg("--proxy").output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let field = |k: &str| text.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim_start_matches([' ', ':']).trim().to_string()));
+        let (on, addr) = super::mac::get();
+        assert_eq!(on, field("HTTPEnable").as_deref() == Some("1"), "{text}");
+        if on {
+            assert_eq!(addr, format!("{}:{}", field("HTTPProxy").unwrap(), field("HTTPPort").unwrap()));
+        }
     }
 
     /// Only services that don't exist, so no real setting is touched.
