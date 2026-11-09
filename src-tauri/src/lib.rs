@@ -1659,6 +1659,14 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    /// The settings page records Mac key names on macOS.
+    #[test]
+    fn mac_key_names_are_the_same_hotkey() {
+        use tauri_plugin_global_shortcut::Shortcut;
+        assert_eq!("Cmd+Option+P".parse::<Shortcut>().unwrap(), "Super+Alt+P".parse::<Shortcut>().unwrap());
+        assert_eq!("Ctrl+Shift+Cmd+F1".parse::<Shortcut>().unwrap(), "Ctrl+Shift+Super+F1".parse::<Shortcut>().unwrap());
+    }
+
     #[test]
     fn subscription_headers() {
         assert_eq!(disposition_name(r#"attachment; filename="sbm.yaml""#).as_deref(), Some("sbm.yaml"));
