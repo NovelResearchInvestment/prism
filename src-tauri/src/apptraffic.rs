@@ -83,11 +83,13 @@ impl AppTraffic {
             }
             let m = &c["metadata"];
             // sing-box reports only the path.
-            let name = match m["process"].as_str().filter(|p| !p.is_empty()) {
+            let process = m["process"].as_str().filter(|p| !p.is_empty());
+            let path = m["processPath"].as_str().map(|p| if process.is_some() { Some(p) } else { singbox_path(p) }).unwrap_or_default();
+            let name = match process {
                 Some(p) => p.to_string(),
-                None => m["processPath"].as_str().map(prism_core::process::file_name).unwrap_or_default(),
+                None => path.map(prism_core::process::file_name).unwrap_or_default(),
             };
-            if let Some(p) = m["processPath"].as_str().filter(|p| !p.is_empty()) {
+            if let Some(p) = path.filter(|p| !p.is_empty()) {
                 data.paths.insert(name.clone(), p.to_string());
             }
             let exit = c["chains"].as_array().and_then(|ch| ch.first()).and_then(|x| x.as_str()).unwrap_or("DIRECT").to_string();
@@ -139,10 +141,56 @@ impl AppTraffic {
     }
 }
 
+/// sing-box's `processPath` without what it appends: ` (<user>)` or
+/// ` (<uid>)` after the path, or only the uid when it has no path (None).
+/// Program names can end in `(...)` too (`Chrome Helper (GPU)`), so only a
+/// real account name or a number is taken off.
+fn singbox_path(p: &str) -> Option<&str> {
+    #[cfg(unix)]
+    if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    #[cfg(unix)]
+    if let Some((path, who)) = p.strip_suffix(')').and_then(|s| s.rsplit_once(" (")) {
+        if !path.is_empty() && (who.bytes().all(|b| b.is_ascii_digit()) || is_user(who)) {
+            return Some(path);
+        }
+    }
+    Some(p)
+}
+
+#[cfg(unix)]
+fn is_user(name: &str) -> bool {
+    let Ok(c) = std::ffi::CString::new(name) else { return false };
+    !name.is_empty() && unsafe { !libc::getpwnam(c.as_ptr()).is_null() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn singbox_process_paths() {
+        assert_eq!(singbox_path("/Applications/Mail.app/Contents/MacOS/Mail (root)"), Some("/Applications/Mail.app/Contents/MacOS/Mail"));
+        assert_eq!(singbox_path("/usr/libexec/NRDUpdated (501)"), Some("/usr/libexec/NRDUpdated"));
+        assert_eq!(singbox_path("/x/Google Chrome Helper (GPU)"), Some("/x/Google Chrome Helper (GPU)"));
+        assert_eq!(singbox_path("/x/Google Chrome Helper (GPU) (root)"), Some("/x/Google Chrome Helper (GPU)"));
+        assert_eq!(singbox_path("/x/Mail"), Some("/x/Mail"));
+        assert_eq!(singbox_path("503"), None);
+        assert_eq!(singbox_path(""), Some(""));
+
+        let path = std::env::temp_dir().join(format!("prism-apptraffic-sb-{}.json", std::process::id()));
+        let t = AppTraffic::load(path.clone());
+        let sb = |id: &str, p: &str, down: u64| json!({ "id": id, "upload": 0, "download": down, "chains": ["DIRECT"], "metadata": { "processPath": p } });
+        t.record("2026-11-01", &json!({ "connections": [sb("z", "/x/z", 0)] }));
+        t.record("2026-11-01", &json!({ "connections": [sb("a", "/x/Mail (root)", 10), sb("b", "/x/Mail", 5), sb("c", "0", 1)] }));
+        let all = t.totals("2026-11-01");
+        assert_eq!(all.iter().map(|a| (a.name.as_str(), a.download)).collect::<Vec<_>>(), [("Mail", 15), ("", 1)]);
+        assert_eq!(all[0].path, "/x/Mail");
+        let _ = std::fs::remove_file(path);
+    }
 
     fn conn(id: &str, proc_: &str, up: u64, down: u64, exit: &str) -> Value {
         json!({ "id": id, "upload": up, "download": down, "chains": [exit, "节点选择"],
