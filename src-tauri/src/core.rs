@@ -428,5 +428,9 @@ pub async fn api(s: &Settings, method: &str, path: &str, body: Option<Value>) ->
     if text.trim().is_empty() {
         return Ok(Value::Null);
     }
-    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    let mut v = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    if method == "GET" && path == "/connections" {
+        crate::apptraffic::fill_process(&mut v);
+    }
+    Ok(v)
 }

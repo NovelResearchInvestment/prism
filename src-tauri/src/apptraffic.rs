@@ -82,14 +82,12 @@ impl AppTraffic {
                 continue;
             }
             let m = &c["metadata"];
-            // sing-box reports only the path.
-            let process = m["process"].as_str().filter(|p| !p.is_empty());
-            let path = m["processPath"].as_str().map(|p| if process.is_some() { Some(p) } else { singbox_path(p) }).unwrap_or_default();
-            let name = match process {
+            // sing-box reports only the path (see fill_process).
+            let name = match m["process"].as_str().filter(|p| !p.is_empty()) {
                 Some(p) => p.to_string(),
-                None => path.map(prism_core::process::file_name).unwrap_or_default(),
+                None => m["processPath"].as_str().map(prism_core::process::file_name).unwrap_or_default(),
             };
-            if let Some(p) = path.filter(|p| !p.is_empty()) {
+            if let Some(p) = m["processPath"].as_str().filter(|p| !p.is_empty()) {
                 data.paths.insert(name.clone(), p.to_string());
             }
             let exit = c["chains"].as_array().and_then(|ch| ch.first()).and_then(|x| x.as_str()).unwrap_or("DIRECT").to_string();
@@ -141,6 +139,23 @@ impl AppTraffic {
     }
 }
 
+/// Gives sing-box's connections (`GET /connections`) a `process` like
+/// prism-core's and mihomo's, and a `processPath` that is just the path,
+/// so the Connections page, its app rules and app traffic see one name per
+/// program.
+pub fn fill_process(conns: &mut Value) {
+    for c in conns["connections"].as_array_mut().into_iter().flatten() {
+        let m = &mut c["metadata"];
+        if m["process"].as_str().is_some_and(|p| !p.is_empty()) {
+            continue;
+        }
+        let Some(raw) = m["processPath"].as_str() else { continue };
+        let path = singbox_path(raw).unwrap_or_default().to_string();
+        m["process"] = Value::String(prism_core::process::file_name(&path));
+        m["processPath"] = Value::String(path);
+    }
+}
+
 /// sing-box's `processPath` without what it appends: ` (<user>)` or
 /// ` (<uid>)` after the path, or only the uid when it has no path (None).
 /// Program names can end in `(...)` too (`Chrome Helper (GPU)`), so only a
@@ -184,8 +199,17 @@ mod tests {
         let path = std::env::temp_dir().join(format!("prism-apptraffic-sb-{}.json", std::process::id()));
         let t = AppTraffic::load(path.clone());
         let sb = |id: &str, p: &str, down: u64| json!({ "id": id, "upload": 0, "download": down, "chains": ["DIRECT"], "metadata": { "processPath": p } });
-        t.record("2026-11-01", &json!({ "connections": [sb("z", "/x/z", 0)] }));
-        t.record("2026-11-01", &json!({ "connections": [sb("a", "/x/Mail (root)", 10), sb("b", "/x/Mail", 5), sb("c", "0", 1)] }));
+        let filled = |mut v: Value| {
+            fill_process(&mut v);
+            v
+        };
+        t.record("2026-11-01", &filled(json!({ "connections": [sb("z", "/x/z", 0)] })));
+        let mut second = json!({ "connections": [sb("a", "/x/Mail (root)", 10), sb("b", "/x/Mail", 5), sb("c", "0", 1)] });
+        fill_process(&mut second);
+        let m = &second["connections"][0]["metadata"];
+        assert_eq!((m["process"].as_str(), m["processPath"].as_str()), (Some("Mail"), Some("/x/Mail")));
+        assert_eq!(second["connections"][2]["metadata"]["process"], "");
+        t.record("2026-11-01", &second);
         let all = t.totals("2026-11-01");
         assert_eq!(all.iter().map(|a| (a.name.as_str(), a.download)).collect::<Vec<_>>(), [("Mail", 15), ("", 1)]);
         assert_eq!(all[0].path, "/x/Mail");
