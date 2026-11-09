@@ -84,28 +84,44 @@ mod mac {
         v
     }
 
-    /// Turning off needs no address (Prism passes "" on exit).
+    /// Turning off needs no address (Prism passes "" on exit). One service
+    /// failing doesn't stop the others: on exit especially, a service left
+    /// pointing at the stopped core would cut it off.
     pub fn set(enable: bool, server: &str, bypass: &str) -> Result<()> {
-        let svcs = services();
+        set_on(&services(), enable, server, bypass)
+    }
+
+    pub(super) fn set_on(svcs: &[String], enable: bool, server: &str, bypass: &str) -> Result<()> {
         if svcs.is_empty() {
             bail!("没有可用的网络服务");
         }
-        let state = if enable { "on" } else { "off" };
-        for s in &svcs {
-            if enable {
-                let (host, port) = server.rsplit_once(':').context("bad proxy address")?;
-                networksetup(&["-setwebproxy", s, host, port])?;
-                networksetup(&["-setsecurewebproxy", s, host, port])?;
-                networksetup(&["-setsocksfirewallproxy", s, host, port])?;
-                let mut args = vec!["-setproxybypassdomains".to_string(), s.clone()];
-                args.extend(bypass_list(bypass));
-                networksetup(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let addr = if enable { Some(server.rsplit_once(':').context("bad proxy address")?) } else { None };
+        let mut errors = Vec::new();
+        for s in svcs {
+            if let Err(e) = set_service(s, addr, bypass) {
+                errors.push(format!("{e:#}"));
             }
-            networksetup(&["-setwebproxystate", s, state])?;
-            networksetup(&["-setsecurewebproxystate", s, state])?;
-            networksetup(&["-setsocksfirewallproxystate", s, state])?;
+        }
+        if !errors.is_empty() {
+            bail!("{}", errors.join("; "));
         }
         Ok(())
+    }
+
+    /// Sets (`addr` given) or turns off one service's proxies. Turning off
+    /// tries all three states even when one fails.
+    fn set_service(s: &str, addr: Option<(&str, &str)>, bypass: &str) -> Result<()> {
+        let state = if addr.is_some() { "on" } else { "off" };
+        if let Some((host, port)) = addr {
+            networksetup(&["-setwebproxy", s, host, port])?;
+            networksetup(&["-setsecurewebproxy", s, host, port])?;
+            networksetup(&["-setsocksfirewallproxy", s, host, port])?;
+            let mut args = vec!["-setproxybypassdomains".to_string(), s.to_string()];
+            args.extend(bypass_list(bypass));
+            networksetup(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        }
+        let results = ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"].map(|flag| networksetup(&[flag, s, state]));
+        results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
     }
 
     /// (enabled, "host:port") of the first service's HTTP proxy.
@@ -135,5 +151,15 @@ mod tests {
     #[test]
     fn bypass_list_for_macos() {
         assert_eq!(super::mac::bypass_list("localhost;127.*;10.*;<local>"), ["localhost", "127.*", "10.*", "*.local", "127.0.0.1"]);
+    }
+
+    /// Only services that don't exist, so no real setting is touched.
+    #[test]
+    fn one_failing_service_doesnt_stop_the_rest() {
+        let svcs = ["Prism No Such A".to_string(), "Prism No Such B".to_string()];
+        for enable in [false, true] {
+            let err = super::mac::set_on(&svcs, enable, "127.0.0.1:7890", "").unwrap_err().to_string();
+            assert!(err.contains("Prism No Such A") && err.contains("Prism No Such B"), "{err}");
+        }
     }
 }

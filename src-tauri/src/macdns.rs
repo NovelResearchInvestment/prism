@@ -65,8 +65,9 @@ pub fn override_dns(dir: &Path) -> Result<()> {
     }
     std::fs::write(&file, serde_json::to_vec_pretty(&saved)?)?;
     *ACTIVE.lock().unwrap() = Some(file);
-    for s in &services {
-        set(s, &ours)?;
+    let errors: Vec<String> = services.iter().filter_map(|s| set(s, &ours).err().map(|e| format!("{e:#}"))).collect();
+    if !errors.is_empty() {
+        bail!("{}", errors.join("; "));
     }
     Ok(())
 }
