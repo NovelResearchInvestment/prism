@@ -734,7 +734,8 @@ async fn start(app: &AppHandle, st: &AppState) -> Res<()> {
     if s.tun && !tun_allowed() {
         return Err(NEED_ADMIN.into());
     }
-    if s.tun && s.core == CoreKind::Prism && !st.store.runtime_dir().join("wintun.dll").exists() {
+    // Windows' TUN driver; macOS uses utun.
+    if cfg!(windows) && s.tun && s.core == CoreKind::Prism && !st.store.runtime_dir().join("wintun.dll").exists() {
         st.core.push_log(app, "[prism] 正在下载 wintun.dll ...".into());
         download::wintun(&st.store.runtime_dir(), None).await.map_err(|err| format!("下载 wintun.dll 失败: {err:#}"))?;
     }
