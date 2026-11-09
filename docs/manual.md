@@ -283,10 +283,10 @@ append-proxies:
 - sing-box 内核的 TUN：订阅启用了 `dns` 时沿用它的 `nameserver`（包括 `#代理` 写法）、fake-ip 地址段和 `fake-ip-filter`；没有启用时，国内域名用 `223.5.5.5`、其他域名经代理组用 `1.1.1.1` 查询（即使订阅最后一条规则是直连）。
 - 节点地址是本机（`127.0.0.1`，例如串联本机的另一个代理程序）时，Prism 内核的 TUN 也能连上（v0.1.3 及更早版本会失败）。
 - 不要同时开启其他客户端（如 FlClash、Clash Verge）的 TUN，两个虚拟网卡会互相抢路由。
-- 按设计，内核退出时虚拟网卡和路由会随进程一起删除，异常退出也不会残留。
+- 按设计，内核退出时虚拟网卡和路由会随进程一起删除，异常退出也不会残留（macOS 上内核给物理网卡加的一条专属默认路由会保留，它只影响内核自己的连接）。
 - 开着 TUN 时如果以普通权限启动 Prism 且没有安装 TUN 服务（例如开机自启），内核会先不开 TUN 启动，TUN 开关随之关闭，日志中会说明原因。
 
-**TUN 服务说明**
+**TUN 服务说明**（Windows；macOS 见下一节）
 - 服务以 SYSTEM 身份运行，只做一件事：替 Prism 运行内核。为了安全：
   - 只运行安装时复制到 `C:\Program Files\Prism Service\` 的内核（只有管理员能修改这个目录），不会运行其他程序；
   - 只接受安装它的 Windows 用户、且是安装时登记的那个 `prism.exe` 发来的请求，网页或其他用户无法使用它；
@@ -307,6 +307,7 @@ append-proxies:
 - **开机自启**：写入 `~/Library/LaunchAgents/dev.prism.client.plist`。
 - **一键导入**：`prism://` 和 `clash://` 链接都由 Prism 打开（装有其他 Clash 客户端时，`clash://` 可能由 macOS 选定的程序打开），没有「接管 clash:// 链接」开关。
 - WebDAV 密码保存在「钥匙串」里。
+- **Dock 图标**：关闭窗口后 Prism 留在菜单栏，Dock 图标同时隐藏；从菜单栏图标、快捷键或再次打开 Prism 显示窗口时，Dock 图标重新出现。
 - **卸载**：先在设置页 **卸载** TUN 服务（如已安装），再把 Prism 从「应用程序」拖到废纸篓；数据在 `~/Library/Application Support/dev.prism.client/`。
 - **软件更新**：与 Windows 相同，在设置页检查并安装，下载后校验签名，安装完成后 Prism 自动重新打开。
 
