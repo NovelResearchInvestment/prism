@@ -108,10 +108,11 @@ mod mac {
         Ok(())
     }
 
-    /// Sets (`addr` given) or turns off one service's proxies. Turning off
-    /// tries all three states even when one fails.
+    /// Sets (`addr` given) or turns off one service's proxies. Setting a
+    /// proxy's address also turns it on, so that takes 4 networksetup calls
+    /// per service instead of 7. Turning off tries all three states even
+    /// when one fails.
     fn set_service(s: &str, addr: Option<(&str, &str)>, bypass: &str) -> Result<()> {
-        let state = if addr.is_some() { "on" } else { "off" };
         if let Some((host, port)) = addr {
             networksetup(&["-setwebproxy", s, host, port])?;
             networksetup(&["-setsecurewebproxy", s, host, port])?;
@@ -119,17 +120,33 @@ mod mac {
             let mut args = vec!["-setproxybypassdomains".to_string(), s.to_string()];
             args.extend(bypass_list(bypass));
             networksetup(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+            return Ok(());
         }
-        let results = ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"].map(|flag| networksetup(&[flag, s, state]));
+        let results = ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"].map(|flag| networksetup(&[flag, s, "off"]));
         results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
     }
 
-    /// (enabled, "host:port") of the first service's HTTP proxy.
+    /// (http, https, socks) enabled on `service`.
+    #[cfg(test)]
+    pub(super) fn states(service: &str) -> [bool; 3] {
+        ["-getwebproxy", "-getsecurewebproxy", "-getsocksfirewallproxy"]
+            .map(|flag| networksetup(&[flag, service]).unwrap_or_default().lines().any(|l| l.trim() == "Enabled: Yes"))
+    }
+
+    /// (enabled, "host:port") of the HTTP proxy in effect (the primary
+    /// service's, as `scutil --proxy` shows it). Read in process: the UI
+    /// asks every few seconds, and two networksetup runs each time looked
+    /// at the first service in the list, not necessarily the one in use.
     pub fn get() -> (bool, String) {
-        let Some(s) = services().into_iter().next() else { return (false, String::new()) };
-        let text = networksetup(&["-getwebproxy", &s]).unwrap_or_default();
-        let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
-        (field("Enabled:") == "Yes", format!("{}:{}", field("Server:"), field("Port:")))
+        use system_configuration::core_foundation::number::CFNumber;
+        use system_configuration::core_foundation::string::CFString;
+        use system_configuration::dynamic_store::SCDynamicStoreBuilder;
+
+        let Some(p) = SCDynamicStoreBuilder::new("prism").build().and_then(|s| s.get_proxies()) else { return (false, String::new()) };
+        let item = |k: &'static str| p.find(CFString::from_static_string(k)).map(|v| v.clone());
+        let num = |k| item(k).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64());
+        let host = item("HTTPProxy").and_then(|v| v.downcast::<CFString>()).map(|s| s.to_string()).unwrap_or_default();
+        (num("HTTPEnable") == Some(1), format!("{host}:{}", num("HTTPPort").unwrap_or(0)))
     }
 }
 
@@ -151,6 +168,54 @@ mod tests {
     #[test]
     fn bypass_list_for_macos() {
         assert_eq!(super::mac::bypass_list("localhost;127.*;10.*;<local>"), ["localhost", "127.*", "10.*", "*.local", "127.0.0.1"]);
+    }
+
+    /// On the real network services, with one that fails in between: turns
+    /// the system proxy on and off again. Changes this Mac's settings for a
+    /// moment and leaves every proxy off, so only with PRISM_SYSPROXY_LIVE=1
+    /// and the address / bypass list the services already have, e.g.
+    /// `PRISM_SYSPROXY_LIVE=1 PRISM_SYSPROXY_ADDR=127.0.0.1:7890 cargo test -p prism sysproxy -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_round_trip_on_this_mac() {
+        if std::env::var_os("PRISM_SYSPROXY_LIVE").is_none() {
+            return;
+        }
+        let addr = std::env::var("PRISM_SYSPROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:7890".into());
+        let bypass = std::env::var("PRISM_SYSPROXY_BYPASS").unwrap_or_default();
+        let real = super::mac::services();
+        assert!(!real.is_empty());
+        let mut svcs = real.clone();
+        svcs.insert(svcs.len() / 2, "Prism No Such Service".into());
+        let t = std::time::Instant::now();
+        let on = super::mac::set_on(&svcs, true, &addr, &bypass).unwrap_err().to_string();
+        let on_time = t.elapsed();
+        let on_states: Vec<_> = real.iter().map(|s| (s.clone(), super::mac::states(s))).collect();
+        let in_effect = super::mac::get();
+        let t = std::time::Instant::now();
+        let off = super::mac::set_on(&svcs, false, &addr, &bypass).unwrap_err().to_string();
+        let off_time = t.elapsed();
+        let off_states: Vec<_> = real.iter().map(|s| (s.clone(), super::mac::states(s))).collect();
+        assert!(on.contains("Prism No Such Service") && !real.iter().any(|s| on.contains(&format!(" {s} "))), "{on}");
+        assert!(off.contains("Prism No Such Service"), "{off}");
+        assert!(on_states.iter().all(|(_, st)| *st == [true; 3]), "{on_states:?}");
+        assert_eq!(in_effect, (true, addr.clone()));
+        assert!(!super::mac::get().0);
+        assert!(off_states.iter().all(|(_, st)| *st == [false; 3]), "{off_states:?}");
+        println!("{} services on ({on_time:?}) and off again ({off_time:?}); only the missing one failed", real.len());
+    }
+
+    /// Reads what `scutil --proxy` shows.
+    #[test]
+    fn reads_the_proxy_in_effect() {
+        let out = std::process::Command::new("/usr/sbin/scutil").arg("--proxy").output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let field = |k: &str| text.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim_start_matches([' ', ':']).trim().to_string()));
+        let (on, addr) = super::mac::get();
+        assert_eq!(on, field("HTTPEnable").as_deref() == Some("1"), "{text}");
+        if on {
+            assert_eq!(addr, format!("{}:{}", field("HTTPProxy").unwrap(), field("HTTPPort").unwrap()));
+        }
     }
 
     /// Only services that don't exist, so no real setting is touched.

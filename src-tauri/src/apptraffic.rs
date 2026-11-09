@@ -174,10 +174,21 @@ fn singbox_path(p: &str) -> Option<&str> {
     Some(p)
 }
 
+/// Remembered: every `GET /connections` asks, and getpwnam is a directory
+/// service lookup. Under the lock, as getpwnam isn't reentrant.
 #[cfg(unix)]
 fn is_user(name: &str) -> bool {
+    static KNOWN: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+    let mut known = KNOWN.lock().unwrap();
+    if let Some(&k) = known.get(name) {
+        return k;
+    }
     let Ok(c) = std::ffi::CString::new(name) else { return false };
-    !name.is_empty() && unsafe { !libc::getpwnam(c.as_ptr()).is_null() }
+    let found = !name.is_empty() && unsafe { !libc::getpwnam(c.as_ptr()).is_null() };
+    if known.len() < 256 {
+        known.insert(name.to_string(), found);
+    }
+    found
 }
 
 #[cfg(test)]
