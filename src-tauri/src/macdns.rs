@@ -65,22 +65,34 @@ pub fn override_dns(dir: &Path) -> Result<()> {
     }
     std::fs::write(&file, serde_json::to_vec_pretty(&saved)?)?;
     *ACTIVE.lock().unwrap() = Some(file);
-    for s in &services {
-        set(s, &ours)?;
+    let errors: Vec<String> = services.iter().filter_map(|s| set(s, &ours).err().map(|e| format!("{e:#}"))).collect();
+    if !errors.is_empty() {
+        bail!("{}", errors.join("; "));
     }
     Ok(())
 }
 
-/// Puts back the settings saved in `dir`, if any.
+/// Puts back the settings saved in `dir`, if any. One service failing (it
+/// was deleted, say) doesn't stop the others; only the failed ones stay in
+/// the backup for the next try.
 pub fn restore_from(dir: &Path) -> Result<()> {
     let file = dir.join(FILE);
     let Ok(bytes) = std::fs::read(&file) else { return Ok(()) };
     let saved: BTreeMap<String, Vec<String>> = serde_json::from_slice(&bytes).unwrap_or_default();
-    for (service, servers) in &saved {
-        set(service, servers)?;
+    let mut failed = BTreeMap::new();
+    let mut errors = Vec::new();
+    for (service, servers) in saved {
+        if let Err(e) = set(&service, &servers) {
+            errors.push(format!("{e:#}"));
+            failed.insert(service, servers);
+        }
     }
-    std::fs::remove_file(&file)?;
-    Ok(())
+    if failed.is_empty() {
+        std::fs::remove_file(&file)?;
+        return Ok(());
+    }
+    std::fs::write(&file, serde_json::to_vec_pretty(&failed)?)?;
+    bail!("{}", errors.join("; "))
 }
 
 /// Undoes the override made by this run, if any.
@@ -90,5 +102,21 @@ pub fn restore() {
         if let Err(e) = restore_from(dir) {
             eprintln!("[prism] 恢复 DNS 设置失败: {e:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Only a service that doesn't exist, so no real setting is touched.
+    #[test]
+    fn failed_restore_keeps_only_the_failures() {
+        let dir = std::env::temp_dir().join(format!("prism-macdns-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(super::FILE);
+        std::fs::write(&file, r#"{"Prism No Such Service": []}"#).unwrap();
+        let err = super::restore_from(&dir).unwrap_err().to_string();
+        assert!(err.contains("Prism No Such Service"), "{err}");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("Prism No Such Service"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

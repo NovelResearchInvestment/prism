@@ -406,13 +406,23 @@ mod mac {
     /// only, so other traffic is unaffected).
     fn ensure_scoped_default(iface: &str, gateway: Option<&str>) {
         let r = match gateway {
-            Some(gw) => run("/sbin/route", &["-n", "add", "-ifscope", iface, "default", gw]),
-            None => run("/sbin/route", &["-n", "add", "-ifscope", iface, "default", "-interface", iface]),
+            Some(gw) => add_or_change(&["-ifscope", iface, "default", gw]),
+            None => add_or_change(&["-ifscope", iface, "default", "-interface", iface]),
         };
         match r {
-            Ok(_) => tracing::info!("added a scoped default route on {iface} for the core's own connections"),
-            Err(e) if format!("{e:#}").contains("File exists") => {}
+            Ok(_) => tracing::info!("set a scoped default route on {iface} for the core's own connections"),
             Err(e) => tracing::warn!("no scoped default route on {iface}, the core's own connections may fail: {e:#}"),
+        }
+    }
+
+    /// `route add`, or `route change` when the route is there already: a
+    /// scoped default route stays after the core exits (it is on the
+    /// physical interface, not the utun), and the gateway may have changed
+    /// since (another Wi-Fi, say).
+    fn add_or_change(args: &[&str]) -> Result<String> {
+        match run("/sbin/route", &[&["-n", "add"], args].concat()) {
+            Err(e) if format!("{e:#}").contains("File exists") => run("/sbin/route", &[&["-n", "change"], args].concat()),
+            r => r,
         }
     }
 
@@ -425,9 +435,8 @@ mod mac {
             let field = |k: &str| out.lines().find_map(|l| l.trim().strip_prefix(k).map(|n| n.trim().to_string()));
             if let (Some(gw), Some(iface)) = (field("gateway:"), field("interface:")) {
                 if iface == phys {
-                    match run("/sbin/route", &["-n", "add", "-inet6", "-ifscope", phys, "default", &gw]) {
-                        Err(e) if !format!("{e:#}").contains("File exists") => tracing::warn!("no scoped IPv6 default route on {phys}: {e:#}"),
-                        _ => {}
+                    if let Err(e) = add_or_change(&["-inet6", "-ifscope", phys, "default", &gw]) {
+                        tracing::warn!("no scoped IPv6 default route on {phys}: {e:#}");
                     }
                 }
             }

@@ -20,7 +20,7 @@
 
 1. 从 [Releases](https://github.com/yuuolo/prism/releases) 下载并安装：
    - **Windows**：`Prism_<版本>_x64-setup.exe`。安装程序未做代码签名，SmartScreen 提示时选择「更多信息 → 仍要运行」。
-   - **macOS**（10.15 及以上）：Apple 芯片（M1–M5）下载 `Prism_<版本>_aarch64.dmg`，Intel 芯片下载 `Prism_<版本>_x64.dmg`（「关于本机」可查看芯片）。打开 dmg，把 Prism 拖进「应用程序」。应用没有 Apple 签名，第一次打开要在 Finder 里右键 Prism → **打开** → 再点 **打开**；如果提示「已损坏，无法打开」，在终端执行 `xattr -cr /Applications/Prism.app` 后再打开。
+   - **macOS**（10.15 及以上）：Apple 芯片（M1–M5）下载 `Prism_<版本>_aarch64.dmg`，Intel 芯片下载 `Prism_<版本>_x64.dmg`（「关于本机」可查看芯片）。打开 dmg，把 Prism 拖进「应用程序」。应用没有 Apple 签名，第一次打开会被拦下：macOS 15 及以上先双击打开一次，再到「系统设置 → 隐私与安全性」底部点 **仍要打开** 并输入密码；macOS 14 及以下在 Finder 里右键 Prism → **打开** → 再点 **打开**；如果提示「已损坏，无法打开」，在终端执行 `xattr -cr /Applications/Prism.app` 后再打开。
 2. 打开 Prism，进入 **订阅** 页，粘贴订阅链接，点 **导入**。第一个导入的订阅会自动启用。
 3. 回到 **概览** 页，点 **启动内核**。
 4. 在 **流量接管** 卡片里打开 **系统代理**（或 **TUN 模式**，见第 4 节）。
