@@ -1448,6 +1448,9 @@ pub fn run() {
             if let Err(err) = macdns::restore_from(&store.dir) {
                 eprintln!("[prism] 恢复 DNS 设置失败: {err:#}");
             }
+            // Where the system proxy settings from before Prism are kept.
+            #[cfg(target_os = "macos")]
+            sysproxy::set_backup_dir(&store.dir);
             let settings = store.settings();
             let traffic = traffic::Traffic::load(store.dir.join("traffic.json"));
             let quality = quality::Quality::load(store.dir.join("quality.json"));

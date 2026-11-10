@@ -44,7 +44,79 @@ pub fn get() -> (bool, String) {
 /// (Wi-Fi, Ethernet, ...), through `networksetup`.
 #[cfg(target_os = "macos")]
 mod mac {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
     use anyhow::{bail, Context, Result};
+    use serde::{Deserialize, Serialize};
+
+    /// The proxy settings from before Prism set its own, per service, kept
+    /// in the data folder until Prism turns its proxy off (or exits) and
+    /// puts them back.
+    pub(super) const BACKUP_FILE: &str = "proxy-backup.json";
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+
+    /// The data folder, for the backup (set once at startup).
+    pub fn set_backup_dir(dir: &Path) {
+        let _ = DIR.set(dir.to_path_buf());
+    }
+
+    /// One service's proxies: (host, port) of each one that was on.
+    #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+    pub(super) struct Saved {
+        pub(super) web: Option<(String, String)>,
+        pub(super) secure: Option<(String, String)>,
+        pub(super) socks: Option<(String, String)>,
+        pub(super) bypass: Vec<String>,
+    }
+
+    /// (get, set address, set state) for HTTP, HTTPS and SOCKS.
+    const KINDS: [[&str; 3]; 3] = [
+        ["-getwebproxy", "-setwebproxy", "-setwebproxystate"],
+        ["-getsecurewebproxy", "-setsecurewebproxy", "-setsecurewebproxystate"],
+        ["-getsocksfirewallproxy", "-setsocksfirewallproxy", "-setsocksfirewallproxystate"],
+    ];
+
+    /// What `service` has now. A proxy that already points at `ours`
+    /// (Prism's, left by a crash) counts as off: putting it back would
+    /// point the Mac at a core that isn't running.
+    pub(super) fn read_service(service: &str, ours: (&str, &str)) -> Result<Saved> {
+        let mut on = KINDS.iter().map(|[get, ..]| -> Result<Option<(String, String)>> {
+            let text = networksetup(&[get, service])?;
+            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
+            let (host, port) = (field("Server:"), field("Port:"));
+            Ok((field("Enabled:") == "Yes" && (host.as_str(), port.as_str()) != ours).then_some((host, port)))
+        });
+        let (web, secure, socks) = (on.next().unwrap()?, on.next().unwrap()?, on.next().unwrap()?);
+        let bypass = networksetup(&["-getproxybypassdomains", service])?
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("There aren't any"))
+            .map(String::from)
+            .collect();
+        Ok(Saved { web, secure, socks, bypass })
+    }
+
+    /// Puts `saved` back on `service`: setting an address turns that proxy
+    /// on; the others are turned off. Tries every part even when one fails.
+    pub(super) fn write_service(service: &str, saved: &Saved) -> Result<()> {
+        let mut results = Vec::new();
+        for ([_, set, state], entry) in KINDS.iter().zip([&saved.web, &saved.secure, &saved.socks]) {
+            results.push(match entry {
+                Some((host, port)) => networksetup(&[set, service, host, port]),
+                None => networksetup(&[state, service, "off"]),
+            });
+        }
+        let mut args = vec!["-setproxybypassdomains", service];
+        if saved.bypass.is_empty() {
+            args.push("Empty");
+        } else {
+            args.extend(saved.bypass.iter().map(String::as_str));
+        }
+        results.push(networksetup(&args));
+        results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
+    }
 
     fn networksetup(args: &[&str]) -> Result<String> {
         let out = std::process::Command::new("/usr/sbin/networksetup").args(args).output().context("run networksetup")?;
@@ -87,19 +159,52 @@ mod mac {
     /// Turning off needs no address (Prism passes "" on exit). One service
     /// failing doesn't stop the others: on exit especially, a service left
     /// pointing at the stopped core would cut it off.
+    ///
+    /// Turning on first saves each service's own proxies (once: an existing
+    /// backup holds the real originals); turning off puts them back, so a
+    /// proxy that was set before Prism works again after it. Without a
+    /// backup, turning off just turns the proxies off.
     pub fn set(enable: bool, server: &str, bypass: &str) -> Result<()> {
-        set_on(&services(), enable, server, bypass)
+        set_on(&services(), enable, server, bypass, DIR.get().map(PathBuf::as_path))
     }
 
-    pub(super) fn set_on(svcs: &[String], enable: bool, server: &str, bypass: &str) -> Result<()> {
+    pub(super) fn set_on(svcs: &[String], enable: bool, server: &str, bypass: &str, backup_dir: Option<&Path>) -> Result<()> {
         if svcs.is_empty() {
             bail!("没有可用的网络服务");
         }
+        let file = backup_dir.map(|d| d.join(BACKUP_FILE));
         let addr = if enable { Some(server.rsplit_once(':').context("bad proxy address")?) } else { None };
         let mut errors = Vec::new();
+        if let (Some(file), Some(ours)) = (&file, addr) {
+            if !file.exists() {
+                // A service that can't be read isn't saved; it is just turned off later.
+                let saved: BTreeMap<String, Saved> = svcs.iter().filter_map(|s| read_service(s, ours).ok().map(|v| (s.clone(), v))).collect();
+                std::fs::write(file, serde_json::to_vec_pretty(&saved)?)?;
+            }
+        }
+        let mut saved: BTreeMap<String, Saved> = match (&file, addr) {
+            (Some(file), None) => std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default(),
+            _ => BTreeMap::new(),
+        };
         for s in svcs {
-            if let Err(e) = set_service(s, addr, bypass) {
+            let r = match saved.remove(s) {
+                Some(old) => write_service(s, &old).map_err(|e| (e, Some(old))),
+                None => set_service(s, addr, bypass).map_err(|e| (e, None)),
+            };
+            if let Err((e, old)) = r {
                 errors.push(format!("{e:#}"));
+                if let Some(old) = old {
+                    saved.insert(s.clone(), old); // try again next time
+                }
+            }
+        }
+        if let (Some(file), None) = (&file, addr) {
+            // Services in the backup no longer listed (deleted, disabled) stay
+            // in it with the ones that failed.
+            if saved.is_empty() {
+                let _ = std::fs::remove_file(file);
+            } else if file.exists() {
+                std::fs::write(file, serde_json::to_vec_pretty(&saved)?)?;
             }
         }
         if !errors.is_empty() {
@@ -124,6 +229,30 @@ mod mac {
         }
         let results = ["-setwebproxystate", "-setsecurewebproxystate", "-setsocksfirewallproxystate"].map(|flag| networksetup(&[flag, s, "off"]));
         results.into_iter().collect::<Result<Vec<_>>>().map(|_| ())
+    }
+
+    /// Each proxy's (enabled, host, port), also when off, and setting them
+    /// back exactly: the live test leaves the Mac as it found it.
+    #[cfg(test)]
+    pub(super) fn raw(service: &str) -> Vec<(bool, String, String)> {
+        KINDS
+            .iter()
+            .map(|[get, ..]| {
+                let text = networksetup(&[get, service]).unwrap_or_default();
+                let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
+                (field("Enabled:") == "Yes", field("Server:"), field("Port:"))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn put_raw(service: &str, raw: &[(bool, String, String)]) {
+        for ([_, set, state], (on, host, port)) in KINDS.iter().zip(raw) {
+            if !host.is_empty() {
+                networksetup(&[set, service, host, port]).unwrap();
+            }
+            networksetup(&[state, service, if *on { "on" } else { "off" }]).unwrap();
+        }
     }
 
     /// (http, https, socks) enabled on `service`.
@@ -151,7 +280,7 @@ mod mac {
 }
 
 #[cfg(target_os = "macos")]
-pub use mac::{get, services, set};
+pub use mac::{get, services, set, set_backup_dir};
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn set(_: bool, _: &str, _: &str) -> anyhow::Result<()> {
@@ -185,24 +314,59 @@ mod tests {
         let bypass = std::env::var("PRISM_SYSPROXY_BYPASS").unwrap_or_default();
         let real = super::mac::services();
         assert!(!real.is_empty());
+        // Another tool's proxy on one service before Prism (an inactive one
+        // is best: PRISM_SYSPROXY_OTHER, e.g. "iPhone USB").
+        let other = std::env::var("PRISM_SYSPROXY_OTHER").unwrap_or_else(|_| real.last().unwrap().clone());
+        let original = (super::mac::read_service(&other, ("", "")).unwrap(), super::mac::raw(&other));
+        let theirs = super::mac::Saved { web: Some(("127.0.0.2".into(), "3128".into())), secure: None, socks: None, bypass: vec!["example.com".into()] };
+        super::mac::write_service(&other, &theirs).unwrap();
+        // And one left on Prism's own address by a crash (PRISM_SYSPROXY_CRASHED):
+        // that one must come back off, not pointing at a stopped core.
+        let ours = addr.rsplit_once(':').unwrap();
+        let crashed = std::env::var("PRISM_SYSPROXY_CRASHED").ok();
+        let crashed_original = crashed.as_ref().map(|c| (super::mac::read_service(c, ("", "")).unwrap(), super::mac::raw(c)));
+        if let Some(c) = &crashed {
+            let prism = Some((ours.0.to_string(), ours.1.to_string()));
+            super::mac::write_service(c, &super::mac::Saved { web: prism.clone(), secure: prism.clone(), socks: prism, bypass: vec![] }).unwrap();
+        }
+        // Read with Prism's address counted as off: what should come back.
+        let before: Vec<_> = real.iter().map(|s| super::mac::read_service(s, ours).unwrap()).collect();
+
+        let dir = std::env::temp_dir().join(format!("prism-sysproxy-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let mut svcs = real.clone();
         svcs.insert(svcs.len() / 2, "Prism No Such Service".into());
         let t = std::time::Instant::now();
-        let on = super::mac::set_on(&svcs, true, &addr, &bypass).unwrap_err().to_string();
+        let on = super::mac::set_on(&svcs, true, &addr, &bypass, Some(&dir)).unwrap_err().to_string();
         let on_time = t.elapsed();
         let on_states: Vec<_> = real.iter().map(|s| (s.clone(), super::mac::states(s))).collect();
         let in_effect = super::mac::get();
         let t = std::time::Instant::now();
-        let off = super::mac::set_on(&svcs, false, &addr, &bypass).unwrap_err().to_string();
+        let off = super::mac::set_on(&svcs, false, &addr, &bypass, Some(&dir)).unwrap_err().to_string();
         let off_time = t.elapsed();
-        let off_states: Vec<_> = real.iter().map(|s| (s.clone(), super::mac::states(s))).collect();
+        let after: Vec<_> = real.iter().map(|s| super::mac::read_service(s, ("", "")).unwrap()).collect();
+        let backup_left = dir.join(super::mac::BACKUP_FILE).exists();
+        let crashed_after = crashed.as_ref().map(|c| super::mac::states(c));
+        // This Mac as it was before the test.
+        super::mac::write_service(&other, &original.0).unwrap();
+        super::mac::put_raw(&other, &original.1);
+        if let (Some(c), Some((saved, raw))) = (&crashed, &crashed_original) {
+            super::mac::write_service(c, saved).unwrap();
+            super::mac::put_raw(c, raw);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
         assert!(on.contains("Prism No Such Service") && !real.iter().any(|s| on.contains(&format!(" {s} "))), "{on}");
         assert!(off.contains("Prism No Such Service"), "{off}");
         assert!(on_states.iter().all(|(_, st)| *st == [true; 3]), "{on_states:?}");
         assert_eq!(in_effect, (true, addr.clone()));
-        assert!(!super::mac::get().0);
-        assert!(off_states.iter().all(|(_, st)| *st == [false; 3]), "{off_states:?}");
-        println!("{} services on ({on_time:?}) and off again ({off_time:?}); only the missing one failed", real.len());
+        assert_eq!(after, before, "every service has its own proxies back");
+        assert_eq!(after[real.iter().position(|s| *s == other).unwrap()].web, Some(("127.0.0.2".into(), "3128".into())));
+        assert!(!backup_left, "the backup is gone once everything is back");
+        if let Some(st) = crashed_after {
+            assert_eq!(st, [false; 3], "a proxy on Prism's own address comes back off");
+        }
+        println!("{} services on ({on_time:?}) and back ({off_time:?}); {other}'s own proxy restored; only the missing one failed", real.len());
     }
 
     /// Reads what `scutil --proxy` shows.
@@ -223,7 +387,7 @@ mod tests {
     fn one_failing_service_doesnt_stop_the_rest() {
         let svcs = ["Prism No Such A".to_string(), "Prism No Such B".to_string()];
         for enable in [false, true] {
-            let err = super::mac::set_on(&svcs, enable, "127.0.0.1:7890", "").unwrap_err().to_string();
+            let err = super::mac::set_on(&svcs, enable, "127.0.0.1:7890", "", None).unwrap_err().to_string();
             assert!(err.contains("Prism No Such A") && err.contains("Prism No Such B"), "{err}");
         }
     }
