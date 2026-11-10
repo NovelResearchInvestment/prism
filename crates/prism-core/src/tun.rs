@@ -406,8 +406,8 @@ mod mac {
     /// only, so other traffic is unaffected).
     fn ensure_scoped_default(iface: &str, gateway: Option<&str>) {
         let r = match gateway {
-            Some(gw) => add_or_change(&["-ifscope", iface, "default", gw]),
-            None => add_or_change(&["-ifscope", iface, "default", "-interface", iface]),
+            Some(gw) => add_or_replace(&["-ifscope", iface, "default", gw]),
+            None => add_or_replace(&["-ifscope", iface, "default", "-interface", iface]),
         };
         match r {
             Ok(_) => tracing::info!("set a scoped default route on {iface} for the core's own connections"),
@@ -415,15 +415,36 @@ mod mac {
         }
     }
 
-    /// `route add`, or `route change` when the route is there already: a
-    /// scoped default route stays after the core exits (it is on the
-    /// physical interface, not the utun), and the gateway may have changed
-    /// since (another Wi-Fi, say).
-    fn add_or_change(args: &[&str]) -> Result<String> {
-        match run("/sbin/route", &[&["-n", "add"], args].concat()) {
-            Err(e) if format!("{e:#}").contains("File exists") => run("/sbin/route", &[&["-n", "change"], args].concat()),
+    /// `route add`, replacing the route when it is there already: a scoped
+    /// default route stays after the core exits (it is on the physical
+    /// interface, not the utun), and the gateway may have changed since
+    /// (another Wi-Fi, say). `args` end with `default <gateway>…`; the
+    /// existing route is deleted by everything up to `default`.
+    fn add_or_replace(args: &[&str]) -> Result<()> {
+        let add = |args: &[&str]| -> Result<()> {
+            let out = run("/sbin/route", &[&["-n", "add"], args].concat())?;
+            match route_error(&out) {
+                Some(e) => bail!("route add {}: {e}", args.join(" ")),
+                None => Ok(()),
+            }
+        };
+        match add(args) {
+            Err(e) if format!("{e:#}").ends_with("File exists") => {
+                let upto = args.iter().position(|a| *a == "default").map_or(args, |i| &args[..=i]);
+                run("/sbin/route", &[&["-n", "delete"], upto].concat())?;
+                add(args)
+            }
             r => r,
         }
+    }
+
+    /// The error route(8) printed, if any. It exits 0 either way and prints
+    /// on stdout: `add net default: gateway 192.168.1.1` when it worked,
+    /// `…: gateway 192.168.1.1: File exists` when it didn't.
+    fn route_error(stdout: &str) -> Option<&str> {
+        let line = stdout.lines().find(|l| l.contains(": gateway "))?;
+        let after = &line[line.find(": gateway ")? + ": gateway ".len()..];
+        after.split_once(": ").map(|(_, e)| e.trim())
     }
 
     /// IPv6 address and split default routes on the utun; the physical
@@ -435,7 +456,7 @@ mod mac {
             let field = |k: &str| out.lines().find_map(|l| l.trim().strip_prefix(k).map(|n| n.trim().to_string()));
             if let (Some(gw), Some(iface)) = (field("gateway:"), field("interface:")) {
                 if iface == phys {
-                    if let Err(e) = add_or_change(&["-inet6", "-ifscope", phys, "default", &gw]) {
+                    if let Err(e) = add_or_replace(&["-inet6", "-ifscope", phys, "default", &gw]) {
                         tracing::warn!("no scoped IPv6 default route on {phys}: {e:#}");
                     }
                 }
@@ -530,6 +551,18 @@ mod mac {
         fn utun_header() {
             assert_eq!(&super::frame(&[0x45, 0, 0, 20])[..4], &[0, 0, 0, 2]);
             assert_eq!(&super::frame(&[0x60, 0, 0, 0])[..4], &[0, 0, 0, 30]);
+        }
+
+        /// route(8)'s stdout, as printed by newroute() in Apple's route.c.
+        #[test]
+        fn route_errors_from_stdout() {
+            assert_eq!(super::route_error("add net default: gateway 172.20.15.252\n"), None);
+            assert_eq!(super::route_error("add net default: gateway 172.20.15.252: File exists\n"), Some("File exists"));
+            assert_eq!(super::route_error("add net default: gateway en0\n"), None);
+            assert_eq!(super::route_error("add net default: gateway fe80::1%en0: File exists\n"), Some("File exists"));
+            assert_eq!(super::route_error("add net default: gateway fe80::1%en0\n"), None);
+            assert_eq!(super::route_error("delete net default: gateway 10.0.0.1: not in table\n"), Some("not in table"));
+            assert_eq!(super::route_error(""), None);
         }
 
         /// Gateway of the default route scoped to `iface` (flag I), if any.
