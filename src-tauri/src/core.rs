@@ -310,7 +310,7 @@ impl CoreManager {
             if api(s, "GET", "/version", None).await.is_ok() {
                 #[cfg(target_os = "macos")]
                 if s.tun {
-                    if let Err(e) = crate::macdns::override_dns(&store.dir) {
+                    if let Err(e) = crate::macdns::override_dns(&store.dir, &crate::macdns::config_servers(&cfg)) {
                         self.push_log(app, format!("[prism] 设置 TUN 的系统 DNS 失败，部分域名可能不经过 TUN: {e:#}"));
                     }
                 }

@@ -302,7 +302,7 @@ append-proxies:
 - **系统代理**：设置到所有已启用的网络服务（Wi-Fi、以太网等）的 HTTP、HTTPS 和 SOCKS 代理上，退出时关闭。绕过列表沿用设置页的「系统代理绕过」，`<local>` 换成 `*.local`。
 - **TUN 必须使用 TUN 服务**（macOS 上不能以管理员身份重启 Prism）。开启 TUN 时按提示安装，系统会要求输入一次 Mac 的登录密码；服务是以 root 运行的系统后台服务（LaunchDaemon `dev.prism.service`），程序放在 `/Library/Application Support/Prism Service/`，只接受当前用户的 Prism 的请求。
 - TUN 使用系统的 `utunN` 虚拟网卡，地址 `172.19.0.1`，路由与 Windows 相同（`0.0.0.0/1` + `128.0.0.0/1`），内核自己的连接绑定到原来的网卡（如 `en0`）绕过隧道。
-- **DNS**：Mac 的 DNS 服务器通常是路由器，不经过隧道。所以开启 TUN 期间，Prism 会把所有网络服务的 DNS 临时改成 `223.5.5.5`、`119.29.29.29`（经隧道由内核应答），关闭 TUN、停止内核或退出 Prism 时改回原来的设置；原设置备份在数据目录的 `dns-backup.json`，Prism 意外退出时下次启动会自动恢复。
+- **DNS**：Mac 的 DNS 服务器通常是路由器，不经过隧道。所以开启 TUN 期间，Prism 会把所有网络服务的 DNS 临时改成内核配置里用 IP 写的公网 DNS（订阅 `dns` 的 `default-nameserver`，sing-box 为 `dns.servers`；没有时用 `223.5.5.5`、`119.29.29.29`），查询经隧道由内核应答，关闭 TUN、停止内核或退出 Prism 时改回原来的设置；原设置备份在数据目录的 `dns-backup.json`，Prism 意外退出时下次启动会自动恢复。
 - **应用分流**：程序名就是可执行文件名，没有 `.exe`，例如 `Google Chrome`、`Telegram`；完整路径形如 `/Applications/Telegram.app/Contents/MacOS/Telegram`。
 - **开机自启**：写入 `~/Library/LaunchAgents/dev.prism.client.plist`。
 - **一键导入**：`prism://` 和 `clash://` 链接都由 Prism 打开（装有其他 Clash 客户端时，`clash://` 可能由 macOS 选定的程序打开），没有「接管 clash:// 链接」开关。
