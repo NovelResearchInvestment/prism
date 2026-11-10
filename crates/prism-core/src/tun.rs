@@ -421,20 +421,22 @@ mod mac {
     /// (another Wi-Fi, say). `args` end with `default <gateway>…`; the
     /// existing route is deleted by everything up to `default`.
     fn add_or_replace(args: &[&str]) -> Result<()> {
-        let add = |args: &[&str]| -> Result<()> {
-            let out = run("/sbin/route", &[&["-n", "add"], args].concat())?;
-            match route_error(&out) {
-                Some(e) => bail!("route add {}: {e}", args.join(" ")),
-                None => Ok(()),
-            }
-        };
-        match add(args) {
+        match route_add(args) {
             Err(e) if format!("{e:#}").ends_with("File exists") => {
                 let upto = args.iter().position(|a| *a == "default").map_or(args, |i| &args[..=i]);
                 run("/sbin/route", &[&["-n", "delete"], upto].concat())?;
-                add(args)
+                route_add(args)
             }
             r => r,
+        }
+    }
+
+    /// `route -n add`, failing when route(8) printed an error.
+    fn route_add(args: &[&str]) -> Result<()> {
+        let out = run("/sbin/route", &[&["-n", "add"], args].concat())?;
+        match route_error(&out) {
+            Some(e) => bail!("route add {}: {e}", args.join(" ")),
+            None => Ok(()),
         }
     }
 
@@ -464,7 +466,7 @@ mod mac {
         }
         if auto_route {
             for net in ROUTES6 {
-                run("/sbin/route", &["-n", "add", "-inet6", "-net", net, "-interface", name])?;
+                route_add(&["-inet6", "-net", net, "-interface", name])?;
             }
         }
         Ok(())
@@ -489,7 +491,7 @@ mod mac {
         net::set_bind_interface(phys);
         if cfg.auto_route {
             for net in ["0.0.0.0/1", "128.0.0.0/1"] {
-                run("/sbin/route", &["-n", "add", "-net", net, "-interface", &name])?;
+                route_add(&["-net", net, "-interface", &name])?;
             }
         }
         if cfg.ipv6 {
@@ -562,6 +564,11 @@ mod mac {
             assert_eq!(super::route_error("add net default: gateway fe80::1%en0: File exists\n"), Some("File exists"));
             assert_eq!(super::route_error("add net default: gateway fe80::1%en0\n"), None);
             assert_eq!(super::route_error("delete net default: gateway 10.0.0.1: not in table\n"), Some("not in table"));
+            // The split routes into the utun: `-net … -interface utunN`.
+            assert_eq!(super::route_error("add net 0.0.0.0: gateway utun4\n"), None);
+            assert_eq!(super::route_error("add net 0.0.0.0: gateway utun4: File exists\n"), Some("File exists"));
+            assert_eq!(super::route_error("add net ::/1: gateway utun4\n"), None);
+            assert_eq!(super::route_error("add net 8000::/1: gateway utun4: File exists\n"), Some("File exists"));
             assert_eq!(super::route_error(""), None);
         }
 
